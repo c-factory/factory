@@ -1,0 +1,7 @@
+{
+    "name": "c-factory",
+    "description": "The build system for C programs",
+    "author": "c-factory",
+    "type": "application",
+    "sources": "main.c"
+}
