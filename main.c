@@ -4,24 +4,35 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+typedef enum
+{
+    project_type_application,
+    project_type_library
+} project_type_t;
+
 typedef struct
 {
-    wide_string_t *name;
-} project_description_t;
+    wide_string_t  *name;
+    wide_string_t  *description;
+    wide_string_t  *author;
+    project_type_t  type;
+    wide_string_t **sources;
+    size_t          sources_count;
+} project_descriptor_t;
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
-project_description_t * parse_project_description(json_element_t *root, const char *file_name);
-void destroy_project_description(project_description_t *descr);
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
+void destroy_project_descriptor(project_descriptor_t *descr);
 
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
     wide_string_t *js_string = json_element_to_simple_string(&root->base);
-    project_description_t * descr = parse_project_description(root, "factory.json");
+    project_descriptor_t * descr = parse_project_descriptor(root, "factory.json");
     wprintf(L"%s\n", js_string->data);
     free(js_string);
     destroy_json_element(&root->base);
-    destroy_project_description(descr);
+    destroy_project_descriptor(descr);
     return 0;
 }
 
@@ -60,36 +71,113 @@ json_element_t * read_json_from_file(const char *file_name, bool silent_mode)
     return result;
 }
 
-project_description_t * parse_project_description(json_element_t *root, const char *file_name)
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name)
 {
     if (root->base.type != json_object)
     {
         fprintf(stderr,
-            "'%s', invalid format, expected a JSON object the contains a project description", file_name);
+            "'%s', invalid format, expected a JSON object the contains a project descriptor", file_name);
         return NULL;
     }
 
-    project_description_t *descr = nnalloc(sizeof(project_description_t));
-    memset(descr, 0, sizeof(project_description_t));
+    project_descriptor_t *descr = nnalloc(sizeof(project_descriptor_t));
+    memset(descr, 0, sizeof(project_descriptor_t));
 
     json_pair_t *elem_name = get_pair_from_json_object(root->data.object, L"name");
     if (!elem_name || elem_name->value->base.type != json_string)
     {
         fprintf(stderr,
-            "'%s', the project description does not contain a name", file_name);
+            "'%s', the project descriptor does not contain a name", file_name);
         goto error;
     }
     descr->name = duplicate_wide_string(*elem_name->value->data.string_value);
 
+    json_pair_t *elem_description = get_pair_from_json_object(root->data.object, L"description");
+    if (elem_description && elem_description->value->base.type == json_string)
+        descr->description = duplicate_wide_string(*elem_description->value->data.string_value);
+
+    json_pair_t *elem_author = get_pair_from_json_object(root->data.object, L"author");
+    if (elem_author && elem_author->value->base.type == json_string)
+        descr->author = duplicate_wide_string(*elem_author->value->data.string_value);
+
+    json_pair_t *elem_type = get_pair_from_json_object(root->data.object, L"type");
+    if (elem_type)
+    {
+        if (elem_type->value->base.type != json_string)
+        {
+            wide_string_t *elem_wstr = json_element_to_simple_string(&elem_type->value->base);
+            string_t *elem_str = encode_utf8_string(*elem_wstr);
+            fprintf(stderr,
+                "'%s', the project descriptor contains unsupported project type: '%s'",
+                file_name, elem_str->data);
+                free(elem_wstr);
+                free(elem_str);
+            goto error;
+        }
+        if (are_wide_strings_equal(*elem_type->value->data.string_value, __W(L"application")))
+            descr->type = project_type_application;
+        else if (are_wide_strings_equal(*elem_type->value->data.string_value, __W(L"library")))
+            descr->type = project_type_library;
+        else
+        {
+            string_t *type = encode_utf8_string(*elem_type->value->data.string_value);
+            fprintf(stderr,
+                "'%s', the project descriptor contains unsupported project type: '%s'",
+                file_name, type->data);
+            free(type);
+            goto error;
+        }
+    }
+    else
+    {
+        descr->type = project_type_application;
+    }
+
+    json_pair_t *elem_sources = get_pair_from_json_object(root->data.object, L"sources");
+    if (elem_sources)
+    {
+        if (elem_sources->value->base.type == json_string)
+        {
+            descr->sources = nnalloc(sizeof(wide_string_t*) * 1);
+            descr->sources[0] = duplicate_wide_string(*elem_sources->value->data.string_value);
+            descr->sources_count = 1;
+        }
+        else if (elem_sources->value->base.type == json_array)
+        {
+            size_t count = elem_sources->value->data.array->count;
+            descr->sources = nnalloc(sizeof(wide_string_t*) * count);
+            for (size_t i = 0; i < count; i++)
+            {
+                json_element_t *elem_source = get_element_from_json_array(elem_sources->value->data.array, i);
+                if  (elem_source && elem_source->base.type == json_string)
+                {
+                    descr->sources[descr->sources_count++] 
+                        = duplicate_wide_string(*elem_source->data.string_value);
+                }
+            }
+        }
+    }
+    if (!descr->sources_count)
+    {
+        fprintf(stderr,
+            "'%s', the project descriptor does not contain a list of source files", file_name);
+        goto error;
+    }
+    
     return descr;
 
 error:
-    destroy_project_description(descr);
+    destroy_project_descriptor(descr);
     return NULL;
 }
 
-void destroy_project_description(project_description_t *descr)
+void destroy_project_descriptor(project_descriptor_t *descr)
 {
     free(descr->name);
+    free(descr->description);
+    free(descr->author);
+    for (size_t i = 0; i < descr->sources_count; i++)
+        free(descr->sources[i]);
+    free(descr->sources);
     free(descr);
 }
