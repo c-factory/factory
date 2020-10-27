@@ -198,7 +198,7 @@ void destroy_project_descriptor(project_descriptor_t *descr)
     free(descr->description);
     free(descr->author);
     for (size_t i = 0; i < descr->sources_count; i++)
-        free(descr->sources[i]);
+        destroy_full_path(descr->sources[i]);
     free(descr->sources);
     free(descr);
 }
