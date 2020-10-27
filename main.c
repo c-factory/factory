@@ -40,15 +40,6 @@ int main(void)
     make(sources_list);
     destroy_project_descriptor(descr);
     destroy_tree_set_and_content(sources_list, free);
-    /*
-    DIR *dir = opendir(".");
-    struct dirent *de;
-    if(dir != NULL) {
-		while((de = readdir(dir)) != NULL)
-			printf("%s\n", de->d_name);
-		closedir(dir);
-	}
-    */
     return 0;
 }
 
@@ -222,12 +213,34 @@ bool build_sources_list(project_descriptor_t *descr, string_t path_prefix, tree_
                 full_file_name = create_formatted_string("%S%c%S%c%S", path_prefix, path_separator, *fp->path, path_separator, *fp->file_name);
             else
                 full_file_name = create_formatted_string("%S%c%S", *fp->path, path_separator, *fp->file_name);
-            add_item_to_tree_set(file_list, full_file_name);
+            if (!add_item_to_tree_set(file_list, full_file_name))
+                free(full_file_name);
             if (!file_exists(full_file_name->data))
             {
                 fprintf(stderr, "File '%s' not found\n", full_file_name->data);
                 return false;
             }
+        }
+        else
+        {
+            file_name_template_t *tmpl = create_file_name_template(*fp->file_name);
+            DIR *dir = opendir(fp->path->data);
+            struct dirent *dent;
+            if(dir != NULL)
+            {
+                while((dent = readdir(dir)) != NULL)
+                {
+                    string_t file_name = _S(dent->d_name);
+                    if (file_name_matches_template(file_name, tmpl))
+                    {
+                        string_t *full_file_name = create_formatted_string("%S%c%S", *fp->path, path_separator, file_name);
+                        if (!add_item_to_tree_set(file_list, full_file_name))
+                            free(full_file_name);
+                    }
+                }
+                closedir(dir);
+            }
+            destroy_file_name_template(tmpl);
         }
     }
     return true;
