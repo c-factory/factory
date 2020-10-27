@@ -1,8 +1,10 @@
 #include "strings/strings.h"
 #include "json/json.h"
+#include "files/path.h"
 #include "allocator.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <dirent.h>
 
 typedef enum
 {
@@ -16,7 +18,7 @@ typedef struct
     wide_string_t  *description;
     wide_string_t  *author;
     project_type_t  type;
-    wide_string_t **sources;
+    full_path_t   **sources;
     size_t          sources_count;
 } project_descriptor_t;
 
@@ -33,6 +35,13 @@ int main(void)
     free(js_string);
     destroy_json_element(&root->base);
     destroy_project_descriptor(descr);
+    DIR *dir = opendir(".");
+    struct dirent *de;
+    if(dir != NULL) {
+		while((de = readdir(dir)) != NULL)
+			printf("%s\n", de->d_name);
+		closedir(dir);
+	}
     return 0;
 }
 
@@ -136,10 +145,13 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
     json_pair_t *elem_sources = get_pair_from_json_object(root->data.object, L"sources");
     if (elem_sources)
     {
+        bool bad_file_name = false;
         if (elem_sources->value->base.type == json_string)
         {
-            descr->sources = nnalloc(sizeof(wide_string_t*) * 1);
-            descr->sources[0] = duplicate_wide_string(*elem_sources->value->data.string_value);
+            descr->sources = nnalloc(sizeof(string_t*) * 1);
+            string_t * full_path = wide_string_to_string(*elem_sources->value->data.string_value, '?', &bad_file_name);
+            descr->sources[0] = split_path(*full_path);
+            free(full_path);
             descr->sources_count = 1;
         }
         else if (elem_sources->value->base.type == json_array)
@@ -151,10 +163,19 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
                 json_element_t *elem_source = get_element_from_json_array(elem_sources->value->data.array, i);
                 if  (elem_source && elem_source->base.type == json_string)
                 {
-                    descr->sources[descr->sources_count++] 
-                        = duplicate_wide_string(*elem_source->data.string_value);
+                    string_t * full_path = wide_string_to_string(*elem_source->data.string_value, '?', &bad_file_name);
+                    descr->sources[descr->sources_count++] = split_path(*full_path);
+                    free(full_path);
                 }
+                if (bad_file_name)
+                    break;
             }
+        }
+        if (bad_file_name)
+        {
+            fprintf(stderr,
+                "'%s', the source file list contains a bad filename", file_name);
+            goto error;
         }
     }
     if (!descr->sources_count)
