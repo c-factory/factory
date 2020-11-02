@@ -24,22 +24,45 @@ typedef struct
     size_t          sources_count;
 } project_descriptor_t;
 
+typedef struct
+{
+    project_descriptor_t *project;
+    string_t *full_file_name;
+} source_descriptor_t;
+
+typedef struct
+{
+    tree_set_t base;
+} source_list_t;
+
+typedef struct
+{
+    iterator_t base;
+} source_list_iterator_t;
+
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
-void destroy_project_descriptor(project_descriptor_t *descr);
-bool build_sources_list(project_descriptor_t *descr, string_t path_prefix, tree_set_t *file_list);
-void make(tree_set_t *sources_list);
+source_list_t *create_source_list();
+void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *full_file_name);
+source_list_iterator_t * create_iterator_from_source_list(source_list_t *list);
+bool has_next_source_descriptor(source_list_iterator_t *iter);
+source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter);
+void destroy_source_list_iterator(source_list_iterator_t *iter);
+void destroy_source_list(source_list_t *list);
+void destroy_project_descriptor(project_descriptor_t *project);
+bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list);
+void make(source_list_t *source_list);
 
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
-    project_descriptor_t * descr = parse_project_descriptor(root, "factory.json");
+    project_descriptor_t * project = parse_project_descriptor(root, "factory.json");
     destroy_json_element(&root->base);
-    tree_set_t *sources_list = create_tree_set((void*)compare_strings);
-    build_sources_list(descr, __S(""), sources_list);
-    make(sources_list);
-    destroy_project_descriptor(descr);
-    destroy_tree_set_and_content(sources_list, free);
+    source_list_t *source_list = create_source_list();
+    build_source_list(project, __S(""), source_list);
+    make(source_list);
+    destroy_project_descriptor(project);
+    destroy_source_list(source_list);
     return 0;
 }
 
@@ -87,8 +110,8 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         return NULL;
     }
 
-    project_descriptor_t *descr = nnalloc(sizeof(project_descriptor_t));
-    memset(descr, 0, sizeof(project_descriptor_t));
+    project_descriptor_t *project = nnalloc(sizeof(project_descriptor_t));
+    memset(project, 0, sizeof(project_descriptor_t));
 
     json_pair_t *elem_name = get_pair_from_json_object(root->data.object, L"name");
     if (!elem_name || elem_name->value->base.type != json_string)
@@ -97,15 +120,15 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
             "'%s', the project descriptor does not contain a name\n", file_name);
         goto error;
     }
-    descr->name = duplicate_wide_string(*elem_name->value->data.string_value);
+    project->name = duplicate_wide_string(*elem_name->value->data.string_value);
 
     json_pair_t *elem_description = get_pair_from_json_object(root->data.object, L"description");
     if (elem_description && elem_description->value->base.type == json_string)
-        descr->description = duplicate_wide_string(*elem_description->value->data.string_value);
+        project->description = duplicate_wide_string(*elem_description->value->data.string_value);
 
     json_pair_t *elem_author = get_pair_from_json_object(root->data.object, L"author");
     if (elem_author && elem_author->value->base.type == json_string)
-        descr->author = duplicate_wide_string(*elem_author->value->data.string_value);
+        project->author = duplicate_wide_string(*elem_author->value->data.string_value);
 
     json_pair_t *elem_type = get_pair_from_json_object(root->data.object, L"type");
     if (elem_type)
@@ -122,9 +145,9 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
             goto error;
         }
         if (are_wide_strings_equal(*elem_type->value->data.string_value, __W(L"application")))
-            descr->type = project_type_application;
+            project->type = project_type_application;
         else if (are_wide_strings_equal(*elem_type->value->data.string_value, __W(L"library")))
-            descr->type = project_type_library;
+            project->type = project_type_library;
         else
         {
             string_t *type = encode_utf8_string(*elem_type->value->data.string_value);
@@ -137,7 +160,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
     }
     else
     {
-        descr->type = project_type_application;
+        project->type = project_type_application;
     }
 
     json_pair_t *elem_sources = get_pair_from_json_object(root->data.object, L"sources");
@@ -146,23 +169,23 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         bool bad_file_name = false;
         if (elem_sources->value->base.type == json_string)
         {
-            descr->sources = nnalloc(sizeof(string_t*) * 1);
+            project->sources = nnalloc(sizeof(string_t*) * 1);
             string_t * full_path = wide_string_to_string(*elem_sources->value->data.string_value, '?', &bad_file_name);
-            descr->sources[0] = split_path(*full_path);
+            project->sources[0] = split_path(*full_path);
             free(full_path);
-            descr->sources_count = 1;
+            project->sources_count = 1;
         }
         else if (elem_sources->value->base.type == json_array)
         {
             size_t count = elem_sources->value->data.array->count;
-            descr->sources = nnalloc(sizeof(wide_string_t*) * count);
+            project->sources = nnalloc(sizeof(wide_string_t*) * count);
             for (size_t i = 0; i < count; i++)
             {
                 json_element_t *elem_source = get_element_from_json_array(elem_sources->value->data.array, i);
                 if  (elem_source && elem_source->base.type == json_string)
                 {
                     string_t * full_path = wide_string_to_string(*elem_source->data.string_value, '?', &bad_file_name);
-                    descr->sources[descr->sources_count++] = split_path(*full_path);
+                    project->sources[project->sources_count++] = split_path(*full_path);
                     free(full_path);
                 }
                 if (bad_file_name)
@@ -176,36 +199,86 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
             goto error;
         }
     }
-    if (!descr->sources_count)
+    if (!project->sources_count)
     {
         fprintf(stderr,
             "'%s', the project descriptor does not contain a list of source files\n", file_name);
         goto error;
     }
     
-    return descr;
+    return project;
 
 error:
-    destroy_project_descriptor(descr);
+    destroy_project_descriptor(project);
     return NULL;
 }
 
-void destroy_project_descriptor(project_descriptor_t *descr)
+void destroy_project_descriptor(project_descriptor_t *project)
 {
-    free(descr->name);
-    free(descr->description);
-    free(descr->author);
-    for (size_t i = 0; i < descr->sources_count; i++)
-        destroy_full_path(descr->sources[i]);
-    free(descr->sources);
-    free(descr);
+    free(project->name);
+    free(project->description);
+    free(project->author);
+    for (size_t i = 0; i < project->sources_count; i++)
+        destroy_full_path(project->sources[i]);
+    free(project->sources);
+    free(project);
 }
 
-bool build_sources_list(project_descriptor_t *descr, string_t path_prefix, tree_set_t *file_list)
+static int compare_source_descriptors(source_descriptor_t *first, source_descriptor_t *second)
 {
-    for (size_t i = 0; i < descr->sources_count; i++)
+    return compare_strings(first->full_file_name, second->full_file_name);
+}
+
+static void destroy_source_descriptor(source_descriptor_t *source)
+{
+    free(source->full_file_name);
+    free(source);
+}
+
+source_list_t *create_source_list()
+{
+    return (source_list_t*)create_tree_set((void*)compare_source_descriptors);
+}
+
+void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *full_file_name)
+{
+    source_descriptor_t *source = nnalloc(sizeof(source_descriptor_t));
+    source->project = project;
+    source->full_file_name = full_file_name;
+    if (false == add_item_to_tree_set(&list->base, source))
+        destroy_source_descriptor(source);
+}
+
+source_list_iterator_t * create_iterator_from_source_list(source_list_t *list)
+{
+    return (source_list_iterator_t*)create_iterator_from_tree_set(&list->base);
+}
+
+bool has_next_source_descriptor(source_list_iterator_t *iter)
+{
+    return has_next_item(&iter->base);
+}
+
+source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter)
+{
+    return (source_descriptor_t*)next_item(&iter->base);
+}
+
+void destroy_source_list_iterator(source_list_iterator_t *iter)
+{
+    destroy_iterator(&iter->base);
+}
+
+void destroy_source_list(source_list_t *list)
+{
+    destroy_tree_set_and_content(&list->base, (void*)destroy_source_descriptor);
+}
+
+bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list)
+{
+    for (size_t i = 0; i < project->sources_count; i++)
     {
-        full_path_t *fp = descr->sources[i];
+        full_path_t *fp = project->sources[i];
         if (index_of_char_in_string(*fp->file_name, '*') == fp->file_name->length)
         {
             string_t *full_file_name; 
@@ -213,8 +286,7 @@ bool build_sources_list(project_descriptor_t *descr, string_t path_prefix, tree_
                 full_file_name = create_formatted_string("%S%c%S%c%S", path_prefix, path_separator, *fp->path, path_separator, *fp->file_name);
             else
                 full_file_name = create_formatted_string("%S%c%S", *fp->path, path_separator, *fp->file_name);
-            if (!add_item_to_tree_set(file_list, full_file_name))
-                free(full_file_name);
+            add_source_to_list(list, project, full_file_name);
             if (!file_exists(full_file_name->data))
             {
                 fprintf(stderr, "File '%s' not found\n", full_file_name->data);
@@ -234,8 +306,7 @@ bool build_sources_list(project_descriptor_t *descr, string_t path_prefix, tree_
                     if (file_name_matches_template(file_name, tmpl))
                     {
                         string_t *full_file_name = create_formatted_string("%S%c%S", *fp->path, path_separator, file_name);
-                        if (!add_item_to_tree_set(file_list, full_file_name))
-                            free(full_file_name);
+                        add_source_to_list(list, project, full_file_name);
                     }
                 }
                 closedir(dir);
@@ -246,16 +317,16 @@ bool build_sources_list(project_descriptor_t *descr, string_t path_prefix, tree_
     return true;
 }
 
-void make(tree_set_t *sources_list)
+void make(source_list_t *source_list)
 {
-    iterator_t *iter = create_iterator_from_tree_set(sources_list);
-    while(has_next_item(iter))
+    source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
+    while(has_next_source_descriptor(iter))
     {
-        string_t *source = (string_t*)next_item(iter);
-        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror", *source);
+        source_descriptor_t *source = get_next_source_descriptor(iter);
+        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror", *source->full_file_name);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
     }
-    destroy_iterator(iter);
+    destroy_source_list_iterator(iter);
 }
