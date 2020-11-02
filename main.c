@@ -2,6 +2,7 @@
 #include "json/json.h"
 #include "files/path.h"
 #include "files/files.h"
+#include "files/folders.h"
 #include "tree_set.h"
 #include "allocator.h"
 #include <stdlib.h>
@@ -27,7 +28,8 @@ typedef struct
 typedef struct
 {
     project_descriptor_t *project;
-    string_t *full_file_name;
+    string_t *c_file;
+    string_t *obj_file;
 } source_descriptor_t;
 
 typedef struct
@@ -43,7 +45,7 @@ typedef struct
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
 source_list_t *create_source_list();
-void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *full_file_name);
+void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file, string_t *obj_file);
 source_list_iterator_t * create_iterator_from_source_list(source_list_t *list);
 bool has_next_source_descriptor(source_list_iterator_t *iter);
 source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter);
@@ -51,7 +53,8 @@ void destroy_source_list_iterator(source_list_iterator_t *iter);
 void destroy_source_list(source_list_t *list);
 void destroy_project_descriptor(project_descriptor_t *project);
 bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list);
-void make(source_list_t *source_list);
+bool create_folder_structure(string_t target, source_list_t *list);
+void make(string_t target, source_list_t *source_list);
 
 int main(void)
 {
@@ -60,7 +63,9 @@ int main(void)
     destroy_json_element(&root->base);
     source_list_t *source_list = create_source_list();
     build_source_list(project, __S(""), source_list);
-    make(source_list);
+    string_t target = __S("debug");
+    create_folder_structure(target, source_list);
+    make(target, source_list);
     destroy_project_descriptor(project);
     destroy_source_list(source_list);
     return 0;
@@ -226,12 +231,13 @@ void destroy_project_descriptor(project_descriptor_t *project)
 
 static int compare_source_descriptors(source_descriptor_t *first, source_descriptor_t *second)
 {
-    return compare_strings(first->full_file_name, second->full_file_name);
+    return compare_strings(first->c_file, second->c_file);
 }
 
 static void destroy_source_descriptor(source_descriptor_t *source)
 {
-    free(source->full_file_name);
+    free(source->c_file);
+    free(source->obj_file);
     free(source);
 }
 
@@ -240,11 +246,12 @@ source_list_t *create_source_list()
     return (source_list_t*)create_tree_set((void*)compare_source_descriptors);
 }
 
-void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *full_file_name)
+void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file, string_t *obj_file)
 {
     source_descriptor_t *source = nnalloc(sizeof(source_descriptor_t));
     source->project = project;
-    source->full_file_name = full_file_name;
+    source->c_file = c_file;
+    source->obj_file = obj_file;
     if (false == add_item_to_tree_set(&list->base, source))
         destroy_source_descriptor(source);
 }
@@ -274,6 +281,31 @@ void destroy_source_list(source_list_t *list)
     destroy_tree_set_and_content(&list->base, (void*)destroy_source_descriptor);
 }
 
+static string_t * create_c_file_name(string_t path_prefix, string_t *path, string_t *file_name)
+{
+    string_builder_t *c_name = NULL;
+    if (path_prefix.length > 0 && !are_strings_equal(path_prefix, __S(".")))
+        c_name = append_formatted_string(NULL, "%S%c", path_prefix, path_separator);
+    if (path->length > 0 && !are_strings_equal(*path, __S(".")))
+        c_name = append_formatted_string(c_name, "%S%c", *path, path_separator);
+    c_name = append_string(c_name, *file_name);
+    return (string_t*)c_name;
+}
+
+static string_t * create_obj_file_name(string_t *path, string_t *short_c_name)
+{
+    const string_t obj_extension = __S("o");
+    string_builder_t *obj_name = NULL;
+    file_name_t *fn = split_file_name(*short_c_name);
+    if (path->length > 0 && !are_strings_equal(*path, __S(".")))
+        obj_name = append_formatted_string(NULL, "%S%c", *path, path_separator);
+    obj_name = append_formatted_string(obj_name, "%S.%S",
+        (fn->extension->length == 0 || are_strings_equal(*fn->extension, __S("c"))) ? *fn->name : *short_c_name,
+        obj_extension);
+    destroy_file_name(fn);
+    return (string_t*)obj_name;
+}
+
 bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list)
 {
     for (size_t i = 0; i < project->sources_count; i++)
@@ -281,15 +313,12 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
         full_path_t *fp = project->sources[i];
         if (index_of_char_in_string(*fp->file_name, '*') == fp->file_name->length)
         {
-            string_t *full_file_name; 
-            if (path_prefix.length > 0)
-                full_file_name = create_formatted_string("%S%c%S%c%S", path_prefix, path_separator, *fp->path, path_separator, *fp->file_name);
-            else
-                full_file_name = create_formatted_string("%S%c%S", *fp->path, path_separator, *fp->file_name);
-            add_source_to_list(list, project, full_file_name);
-            if (!file_exists(full_file_name->data))
+            string_t *c_file = create_c_file_name(path_prefix, fp->path, fp->file_name); 
+            string_t *obj_file = create_obj_file_name(fp->path, fp->file_name);
+            add_source_to_list(list, project, c_file, obj_file);
+            if (!file_exists(c_file->data))
             {
-                fprintf(stderr, "File '%s' not found\n", full_file_name->data);
+                fprintf(stderr, "File '%s' not found\n", c_file->data);
                 return false;
             }
         }
@@ -305,8 +334,9 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
                     string_t file_name = _S(dent->d_name);
                     if (file_name_matches_template(file_name, tmpl))
                     {
-                        string_t *full_file_name = create_formatted_string("%S%c%S", *fp->path, path_separator, file_name);
-                        add_source_to_list(list, project, full_file_name);
+                        string_t *c_file = create_c_file_name(path_prefix, fp->path, &file_name);
+                        string_t *obj_file = create_obj_file_name(fp->path, &file_name);
+                        add_source_to_list(list, project, c_file, obj_file);
                     }
                 }
                 closedir(dir);
@@ -317,13 +347,47 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
     return true;
 }
 
-void make(source_list_t *source_list)
+bool create_folder_structure(string_t target, source_list_t *list)
+{
+    bool result = true;
+    string_t *target_folder = create_formatted_string("build%c%S", path_separator, target);
+    bool create_target_folder = false;
+    if (!folder_exists("build"))
+    {
+        if (0 != mkdir("build"))
+            goto error;
+        create_target_folder = true;
+    }
+    else
+    {
+        if (!folder_exists(target_folder->data))
+            create_target_folder = true;
+    }
+
+    if (create_target_folder)
+    {
+        if (0 != mkdir(target_folder->data))
+            goto error;
+    }
+    
+    goto cleanup;
+
+error:
+    result = false;
+
+cleanup:
+    free(target_folder);
+    return result;
+}
+
+void make(string_t target, source_list_t *source_list)
 {
     source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
     while(has_next_source_descriptor(iter))
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
-        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror", *source->full_file_name);
+        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror -o build%c%S%c%S", *source->c_file,
+            path_separator, target, path_separator, *source->obj_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
