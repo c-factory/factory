@@ -1,7 +1,7 @@
 {
-    "name": "c-factory",
+    "name": "c factory",
     "description": "The build system for C programs",
-    "author": "c-factory",
+    "author": "c factory",
     "type": "application",
     "sources": ["./t?st*_*ec*.c"]
 }

@@ -18,6 +18,7 @@ typedef enum
 typedef struct
 {
     wide_string_t  *name;
+    string_t       *fixed_name;
     wide_string_t  *description;
     wide_string_t  *author;
     project_type_t  type;
@@ -54,7 +55,7 @@ void destroy_source_list(source_list_t *list);
 void destroy_project_descriptor(project_descriptor_t *project);
 bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list);
 bool create_folder_structure(string_t target, source_list_t *list);
-void make(string_t target, source_list_t *source_list);
+void make(string_t target, source_list_t *source_list, string_t *exe_name);
 
 int main(void)
 {
@@ -65,7 +66,7 @@ int main(void)
     build_source_list(project, __S(""), source_list);
     string_t target = __S("debug");
     create_folder_structure(target, source_list);
-    make(target, source_list);
+    make(target, source_list, project->fixed_name);
     destroy_project_descriptor(project);
     destroy_source_list(source_list);
     return 0;
@@ -126,6 +127,13 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         goto error;
     }
     project->name = duplicate_wide_string(*elem_name->value->data.string_value);
+    project->fixed_name = wide_string_to_string(*project->name, '_', NULL);
+    for (size_t i = 0; i < project->fixed_name->length; i++)
+    {
+        char c = project->fixed_name->data[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            project->fixed_name->data[i] = '_';
+    }
 
     json_pair_t *elem_description = get_pair_from_json_object(root->data.object, L"description");
     if (elem_description && elem_description->value->base.type == json_string)
@@ -221,6 +229,7 @@ error:
 void destroy_project_descriptor(project_descriptor_t *project)
 {
     free(project->name);
+    free(project->fixed_name);
     free(project->description);
     free(project->author);
     for (size_t i = 0; i < project->sources_count; i++)
@@ -380,17 +389,30 @@ cleanup:
     return result;
 }
 
-void make(string_t target, source_list_t *source_list)
+void make(string_t target, source_list_t *source_list, string_t *exe_name)
 {
+    const string_t exe_extension = __S(".exe"); 
     source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
+    string_builder_t *obj_file_list = NULL;
     while(has_next_source_descriptor(iter))
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
-        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror -o build%c%S%c%S", *source->c_file,
-            path_separator, target, path_separator, *source->obj_file);
+        string_t *obj_file = create_formatted_string("build%c%S%c%S", path_separator, target, path_separator, *source->obj_file);
+        if (obj_file_list)
+            obj_file_list = append_char(obj_file_list, ' ');
+        obj_file_list = append_string(obj_file_list, *obj_file);
+        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror -o %S", 
+            *source->c_file, *obj_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
+        free(obj_file);
     }
     destroy_source_list_iterator(iter);
+    string_t *cmd_link = create_formatted_string("gcc %S -o build%c%S%c%S%S",
+        *((string_t*)obj_file_list), path_separator, target, path_separator, *exe_name, exe_extension);
+    free(obj_file_list);
+    printf("%s\n", cmd_link->data);
+    system(cmd_link->data);
+    free(cmd_link);
 }
