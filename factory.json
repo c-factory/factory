@@ -3,5 +3,5 @@
     "description": "The build system for C programs",
     "author": "c factory",
     "type": "application",
-    "sources": ["./t?st*_*ec*.c"]
+    "sources": ["test/*.c"]
 }
