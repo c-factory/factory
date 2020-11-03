@@ -4,6 +4,7 @@
 #include "files/files.h"
 #include "files/folders.h"
 #include "tree_set.h"
+#include "vector.h"
 #include "allocator.h"
 #include "folder_tree.h"
 #include <stdlib.h>
@@ -58,7 +59,7 @@ void destroy_source_list(source_list_t *list);
 void destroy_project_descriptor(project_descriptor_t *project);
 
 bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *source_list, folder_tree_t *tree);
-void make(string_t target, source_list_t *source_list, string_t *exe_name);
+void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list);
 
 int main(void)
 {
@@ -66,13 +67,17 @@ int main(void)
     project_descriptor_t * project = parse_project_descriptor(root, "factory.json");
     destroy_json_element(&root->base);
     source_list_t *source_list = create_source_list();
-    string_t build_folder_name = __S("build");
+    string_t root_folder_name = __S("build");
     string_t target = __S("debug");
     folder_tree_t *build_folder = create_folder_tree();
     folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
     build_source_list(project, __S(""), source_list, target_folder);
-    make_folders(build_folder_name, build_folder);
-    make(target, source_list, project->fixed_name);
+    make_folders(root_folder_name, build_folder);
+    string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
+    vector_t *object_file_list = create_vector();
+    make_project(target_folder_path, project, source_list, object_file_list);
+    destroy_vector_and_content(object_file_list, free);
+    free(target_folder_path);
     destroy_source_list(source_list);
     destroy_folder_tree(build_folder);
     destroy_project_descriptor(project);
@@ -324,6 +329,7 @@ static string_t * create_obj_file_name(string_t *path, string_t *short_c_name)
 
 bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *source_list, folder_tree_t *folder_tree)
 {
+    folder_tree_t *project_folder = create_folder_subtree(folder_tree, project->fixed_name);
     for (size_t i = 0; i < project->sources_count; i++)
     {
         full_path_t *fp = project->sources[i];
@@ -332,7 +338,7 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
             string_t *c_file = create_c_file_name(path_prefix, fp->path, fp->file_name); 
             string_t *obj_file = create_obj_file_name(fp->path, fp->file_name);
             add_source_to_list(source_list, project, c_file, obj_file);
-            add_folder_to_tree(folder_tree, fp->path);
+            add_folder_to_tree(project_folder, fp->path);
             if (!file_exists(c_file->data))
             {
                 fprintf(stderr, "File '%s' not found\n", c_file->data);
@@ -362,36 +368,50 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
             }
             destroy_file_name_template(tmpl);
             if (found_files)
-                add_folder_to_tree(folder_tree, fp->path);
+                add_folder_to_tree(project_folder, fp->path);
         }
     }
     return true;
 }
 
-void make(string_t target, source_list_t *source_list, string_t *exe_name)
+void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list)
 {
-    const string_t exe_extension = __S(".exe"); 
+    // building
+    printf("Building project %s...\n", project->fixed_name->data);
+    string_t *project_folder = create_formatted_string("%S%c%S", *target_folder, path_separator, *project->fixed_name);
     source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
-    string_builder_t *obj_file_list = NULL;
     while(has_next_source_descriptor(iter))
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
-        string_t *obj_file = create_formatted_string("build%c%S%c%S", path_separator, target, path_separator, *source->obj_file);
-        if (obj_file_list)
-            obj_file_list = append_char(obj_file_list, ' ');
-        obj_file_list = append_string(obj_file_list, *obj_file);
+        string_t *obj_file = create_formatted_string("%S%c%S",
+            *project_folder, path_separator, *source->obj_file);
+        add_item_to_vector(object_file_list, obj_file);
         string_t *cmd = create_formatted_string("gcc %S -c -g -Werror -o %S", 
             *source->c_file, *obj_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
-        free(obj_file);
     }
     destroy_source_list_iterator(iter);
-    string_t *cmd_link = create_formatted_string("gcc %S -o build%c%S%c%S%S",
-        *((string_t*)obj_file_list), path_separator, target, path_separator, *exe_name, exe_extension);
-    free(obj_file_list);
-    printf("%s\n", cmd_link->data);
-    system(cmd_link->data);
-    free(cmd_link);
+    free(project_folder);
+
+    // linking
+    if (project->type == project_type_application)
+    {
+        printf("Linking...\n");
+        const string_t exe_extension = __S(".exe");
+        string_builder_t *objects_string = NULL;
+        for (size_t i = 0; i < object_file_list->size; i++)
+        {
+            if (i)
+                objects_string = append_char(objects_string, ' ');
+            objects_string = append_string(objects_string, *((string_t*)object_file_list->data[i]));
+        }
+        string_t *cmd_link = create_formatted_string("gcc %S -o %S%c%S%S",
+            *((string_t*)objects_string), *target_folder, path_separator, *project->fixed_name, exe_extension);
+        printf("%s\n", cmd_link->data);
+        system(cmd_link->data);
+        free(cmd_link);
+        free(objects_string);
+    }
 }
