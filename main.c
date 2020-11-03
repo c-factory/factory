@@ -5,6 +5,7 @@
 #include "files/folders.h"
 #include "tree_set.h"
 #include "allocator.h"
+#include "folder_tree.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <dirent.h>
@@ -30,7 +31,6 @@ typedef struct
 {
     project_descriptor_t *project;
     string_t *c_file;
-    string_t *obj_folder;
     string_t *obj_file;
 } source_descriptor_t;
 
@@ -46,17 +46,18 @@ typedef struct
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
+
 source_list_t *create_source_list();
-void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file,
-                        string_t *obj_folder, string_t *obj_file);
+void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file, string_t *obj_file);
 source_list_iterator_t * create_iterator_from_source_list(source_list_t *list);
 bool has_next_source_descriptor(source_list_iterator_t *iter);
 source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter);
 void destroy_source_list_iterator(source_list_iterator_t *iter);
 void destroy_source_list(source_list_t *list);
+
 void destroy_project_descriptor(project_descriptor_t *project);
-bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list);
-bool create_folder_structure(string_t target, source_list_t *source_list);
+
+bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *source_list, folder_tree_t *tree);
 void make(string_t target, source_list_t *source_list, string_t *exe_name);
 
 int main(void)
@@ -65,12 +66,16 @@ int main(void)
     project_descriptor_t * project = parse_project_descriptor(root, "factory.json");
     destroy_json_element(&root->base);
     source_list_t *source_list = create_source_list();
-    build_source_list(project, __S(""), source_list);
+    string_t build_folder_name = __S("build");
     string_t target = __S("debug");
-    create_folder_structure(target, source_list);
+    folder_tree_t *build_folder = create_folder_tree();
+    folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
+    build_source_list(project, __S(""), source_list, target_folder);
+    make_folders(build_folder_name, build_folder);
     make(target, source_list, project->fixed_name);
-    destroy_project_descriptor(project);
     destroy_source_list(source_list);
+    destroy_folder_tree(build_folder);
+    destroy_project_descriptor(project);
     return 0;
 }
 
@@ -248,7 +253,6 @@ static int compare_source_descriptors(source_descriptor_t *first, source_descrip
 static void destroy_source_descriptor(source_descriptor_t *source)
 {
     free(source->c_file);
-    free(source->obj_folder);
     free(source->obj_file);
     free(source);
 }
@@ -258,13 +262,11 @@ source_list_t *create_source_list()
     return (source_list_t*)create_tree_set((void*)compare_source_descriptors);
 }
 
-void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file,
-                        string_t *obj_folder, string_t *obj_file)
+void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file, string_t *obj_file)
 {
     source_descriptor_t *source = nnalloc(sizeof(source_descriptor_t));
     source->project = project;
     source->c_file = c_file;
-    source->obj_folder = obj_folder;
     source->obj_file = obj_file;
     if (false == add_item_to_tree_set(&list->base, source))
         destroy_source_descriptor(source);
@@ -320,7 +322,7 @@ static string_t * create_obj_file_name(string_t *path, string_t *short_c_name)
     return (string_t*)obj_name;
 }
 
-bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *list)
+bool build_source_list(project_descriptor_t *project, string_t path_prefix, source_list_t *source_list, folder_tree_t *folder_tree)
 {
     for (size_t i = 0; i < project->sources_count; i++)
     {
@@ -329,7 +331,8 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
         {
             string_t *c_file = create_c_file_name(path_prefix, fp->path, fp->file_name); 
             string_t *obj_file = create_obj_file_name(fp->path, fp->file_name);
-            add_source_to_list(list, project, c_file, duplicate_string(*fp->path), obj_file);
+            add_source_to_list(source_list, project, c_file, obj_file);
+            add_folder_to_tree(folder_tree, fp->path);
             if (!file_exists(c_file->data))
             {
                 fprintf(stderr, "File '%s' not found\n", c_file->data);
@@ -341,6 +344,7 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
             file_name_template_t *tmpl = create_file_name_template(*fp->file_name);
             DIR *dir = opendir(fp->path->data);
             struct dirent *dent;
+            bool found_files = false;
             if(dir != NULL)
             {
                 while((dent = readdir(dir)) != NULL)
@@ -348,70 +352,20 @@ bool build_source_list(project_descriptor_t *project, string_t path_prefix, sour
                     string_t file_name = _S(dent->d_name);
                     if (file_name_matches_template(file_name, tmpl))
                     {
+                        found_files = true;
                         string_t *c_file = create_c_file_name(path_prefix, fp->path, &file_name);
                         string_t *obj_file = create_obj_file_name(fp->path, &file_name);
-                        add_source_to_list(list, project, c_file, duplicate_string(*fp->path), obj_file);
+                        add_source_to_list(source_list, project, c_file, obj_file);
                     }
                 }
                 closedir(dir);
             }
             destroy_file_name_template(tmpl);
+            if (found_files)
+                add_folder_to_tree(folder_tree, fp->path);
         }
     }
     return true;
-}
-
-bool create_folder_structure(string_t target, source_list_t *source_list)
-{
-    bool result = true;
-    string_t *target_folder = create_formatted_string("build%c%S", path_separator, target);
-    bool create_target_folder = false;
-    if (!folder_exists("build"))
-    {
-        if (0 != mkdir("build"))
-            goto error;
-        create_target_folder = true;
-    }
-    else
-    {
-        if (!folder_exists(target_folder->data))
-            create_target_folder = true;
-    }
-
-    if (create_target_folder)
-    {
-        if (0 != mkdir(target_folder->data))
-            goto error;
-    }
-
-    source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
-    while(has_next_source_descriptor(iter))
-    {
-        source_descriptor_t *source = get_next_source_descriptor(iter);
-        if (source->obj_folder->length > 0 && !are_strings_equal(*source->obj_folder, __S(".")))
-        {
-            string_t *obj_folder = create_formatted_string("%S%c%S", *target_folder, path_separator, *source->obj_folder);
-            if (!folder_exists(obj_folder->data))
-            {
-                if (0!= mkdir(obj_folder->data))
-                {
-                    free(obj_folder);
-                    goto error;
-                }
-            }
-            free(obj_folder);
-        }
-    }
-    destroy_source_list_iterator(iter);
-
-    goto cleanup;
-
-error:
-    result = false;
-
-cleanup:
-    free(target_folder);
-    return result;
 }
 
 void make(string_t target, source_list_t *source_list, string_t *exe_name)

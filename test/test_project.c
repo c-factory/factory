@@ -1,7 +1,9 @@
 #include <stdio.h>
 
-int main(void)
+void do_something();
+
+int main()
 {
-    printf("it works!\n");
+    do_something();
     return 0;
 }
