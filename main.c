@@ -28,31 +28,36 @@ struct project_descriptor_t
     project_type_t  type;
     full_path_t   **sources;
     size_t          sources_count;
+    string_t      **headers;
+    size_t          headers_count;
     string_t       *path;
 };
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
 void destroy_project_descriptor(project_descriptor_t *project);
-bool build_source_list(project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list, folder_tree_t *folder_tree);
-void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list);
+source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
+vector_t * build_header_list(project_descriptor_t *project);
+void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list,
+    vector_t *header_list, vector_t *object_file_list);
 
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
     project_descriptor_t * project = parse_project_descriptor(root, "factory.json");
     destroy_json_element(&root->base);
-    source_list_t *source_list = create_source_list();
     string_t root_folder_name = __S("build");
     string_t target = __S("debug");
     folder_tree_t *build_folder = create_folder_tree();
     folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
     vector_t *object_file_list = create_vector();
-    build_source_list(project, source_list, object_file_list, target_folder);
+    source_list_t *source_list = build_source_list(project, object_file_list, target_folder);
+    vector_t *header_list = build_header_list(project);
     make_folders(root_folder_name, build_folder);
     string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
-    make_project(target_folder_path, project, source_list, object_file_list);
+    make_project(target_folder_path, project, source_list, header_list, object_file_list);
     destroy_vector_and_content(object_file_list, free);
+    destroy_vector_and_content(header_list, free);
     free(target_folder_path);
     destroy_source_list(source_list);
     destroy_folder_tree(build_folder);
@@ -170,7 +175,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         bool bad_file_name = false;
         if (elem_sources->value->base.type == json_string)
         {
-            project->sources = nnalloc(sizeof(string_t*) * 1);
+            project->sources = nnalloc(sizeof(full_path_t*) * 1);
             string_t * full_path = wide_string_to_string(*elem_sources->value->data.string_value, '?', &bad_file_name);
             project->sources[0] = split_path(*full_path);
             free(full_path);
@@ -179,7 +184,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         else if (elem_sources->value->base.type == json_array)
         {
             size_t count = elem_sources->value->data.array->count;
-            project->sources = nnalloc(sizeof(wide_string_t*) * count);
+            project->sources = nnalloc(sizeof(full_path_t*) * count);
             for (size_t i = 0; i < count; i++)
             {
                 json_element_t *elem_source = get_element_from_json_array(elem_sources->value->data.array, i);
@@ -196,10 +201,48 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         if (bad_file_name)
         {
             fprintf(stderr,
-                "'%s', the source file list contains a bad filename\n", file_name);
+                "'%s', the source files list contains a bad filename\n", file_name);
             goto error;
         }
     }
+
+    json_pair_t *elem_headers = get_pair_from_json_object(root->data.object, L"headers");
+    if (elem_headers)
+    {
+        bool bad_folder_name = false;
+        if (elem_headers->value->base.type == json_string)
+        {
+            project->headers = nnalloc(sizeof(string_t*) * 1);
+            string_t * header_path = wide_string_to_string(*elem_headers->value->data.string_value, '?', &bad_folder_name);
+            project->headers[0] = header_path;
+            project->headers_count = 1;
+        }
+        else if (elem_headers->value->base.type == json_array)
+        {
+            size_t count = elem_headers->value->data.array->count;
+            project->headers = nnalloc(sizeof(string_t*) * count);
+            for (size_t i = 0; i < count; i++)
+            {
+                json_element_t *elem_header = get_element_from_json_array(elem_headers->value->data.array, i);
+                if  (elem_header && elem_header->base.type == json_string)
+                {
+                    string_t * header_path = wide_string_to_string(*elem_header->data.string_value, '?', &bad_folder_name);
+                    project->headers[project->headers_count++] = header_path;
+                }
+                if (bad_folder_name)
+                    break;
+            }
+        }
+        if (bad_folder_name)
+        {
+            fprintf(stderr,
+                "'%s', the headers list contains a bad folder name\n", file_name);
+            goto error;
+        }
+    }
+
+    project->path = duplicate_string(__S("."));
+
     if (!project->sources_count)
     {
         fprintf(stderr,
@@ -207,8 +250,13 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         goto error;
     }
 
-    project->path = duplicate_string(__S("."));
-    
+    if (project->type == project_type_library && !project->headers_count)
+    {
+        fprintf(stderr,
+            "'%s', the library project descriptor does not contain a list of headers\n", file_name);
+        goto error;
+    }
+
     return project;
 
 error:
@@ -225,6 +273,9 @@ void destroy_project_descriptor(project_descriptor_t *project)
     for (size_t i = 0; i < project->sources_count; i++)
         destroy_full_path(project->sources[i]);
     free(project->sources);
+    for (size_t i = 0; i < project->headers_count; i++)
+        free(project->headers[i]);
+    free(project->headers);
     free(project->path);
     free(project);
 }
@@ -255,8 +306,9 @@ static string_t * create_obj_file_name(string_t *project_name, string_t *path, s
     return (string_t*)obj_name;
 }
 
-bool build_source_list(project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list, folder_tree_t *folder_tree)
+source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree)
 {
+    source_list_t *source_list = create_source_list();
     folder_tree_t *project_folder = create_folder_subtree(folder_tree, project->fixed_name);
     for (size_t i = 0; i < project->sources_count; i++)
     {
@@ -271,7 +323,8 @@ bool build_source_list(project_descriptor_t *project, source_list_t *source_list
             if (!file_exists(c_file->data))
             {
                 fprintf(stderr, "File '%s' not found\n", c_file->data);
-                return false;
+                destroy_source_list(source_list);
+                return NULL;
             }
         }
         else
@@ -307,11 +360,50 @@ bool build_source_list(project_descriptor_t *project, source_list_t *source_list
             }
         }
     }
-    return true;
+    return source_list;
 }
 
-void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list)
+static void add_project_headers_to_list(project_descriptor_t *project, vector_t *header_list)
 {
+    if (!project->headers_count)
+        return;
+
+    if (project->path->length > 0 && !are_strings_equal(*project->path, __S(".")))
+    {
+        for (size_t i = 0; i < project->headers_count; i++)
+        {
+            string_t *header = create_formatted_string("%S%c%S", *project->path, path_separator, *project->headers[i]);
+            add_item_to_vector(header_list, header);
+        }
+    }
+    else
+    {
+        for (size_t i = 0; i < project->headers_count; i++)
+        {
+            add_item_to_vector(header_list, duplicate_string(*project->headers[i]));
+        }
+    }
+}
+
+vector_t * build_header_list(project_descriptor_t *project)
+{
+    vector_t *header_list = create_vector();
+    add_project_headers_to_list(project, header_list);
+    return header_list;
+}
+
+void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list,
+    vector_t *header_list, vector_t *object_file_list)
+{
+    // headers
+    string_builder_t *headers_string = NULL;
+    for (size_t i = 0; i < header_list->size; i++)
+    {
+        if (i)
+            headers_string = append_char(headers_string, ' ');
+        headers_string = append_formatted_string(headers_string, "-I%S", *((string_t*)header_list->data[i]));
+    }
+
     // building
     printf("Building project %s...\n", project->fixed_name->data);
     source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
@@ -319,14 +411,15 @@ void make_project(string_t *target_folder, project_descriptor_t *project, source
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
         string_t *obj_file = create_formatted_string("%S%c%S", *target_folder, path_separator, *source->obj_file);
-        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror -o %S", 
-            *source->c_file, *obj_file);
+        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror %S -o %S", 
+            *source->c_file, headers_string ? *((string_t*)headers_string) : __S(""), *obj_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
         free(obj_file);
     }
     destroy_source_list_iterator(iter);
+    free(headers_string);
 
     // linking
     if (project->type == project_type_application)

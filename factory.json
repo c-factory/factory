@@ -3,5 +3,6 @@
     "description": "The build system for C programs",
     "author": "c factory",
     "type": "application",
-    "sources": ["test/*.c", "test/src/subroutine.c"]
+    "sources": ["test/*.c", "test/src/subroutine.c"],
+    "headers": ["test/src"]
 }

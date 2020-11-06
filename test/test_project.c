@@ -1,6 +1,4 @@
-#include <stdio.h>
-
-void do_something();
+#include "subroutine.h"
 
 int main()
 {
