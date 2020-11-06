@@ -3,7 +3,7 @@
 #include "files/path.h"
 #include "files/files.h"
 #include "files/folders.h"
-#include "tree_set.h"
+#include "source_list.h"
 #include "vector.h"
 #include "allocator.h"
 #include "folder_tree.h"
@@ -11,13 +11,15 @@
 #include <stdio.h>
 #include <dirent.h>
 
+typedef struct project_descriptor_t project_descriptor_t;
+
 typedef enum
 {
     project_type_application,
     project_type_library
 } project_type_t;
 
-typedef struct
+struct project_descriptor_t
 {
     wide_string_t  *name;
     string_t       *fixed_name;
@@ -27,37 +29,11 @@ typedef struct
     full_path_t   **sources;
     size_t          sources_count;
     string_t       *path;
-} project_descriptor_t;
-
-typedef struct
-{
-    project_descriptor_t *project;
-    string_t *c_file;
-    string_t *obj_file;
-} source_descriptor_t;
-
-typedef struct
-{
-    tree_set_t base;
-} source_list_t;
-
-typedef struct
-{
-    iterator_t base;
-} source_list_iterator_t;
+};
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
 void destroy_project_descriptor(project_descriptor_t *project);
-
-source_list_t *create_source_list();
-void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file, string_t *obj_file);
-source_list_iterator_t * create_iterator_from_source_list(source_list_t *list);
-bool has_next_source_descriptor(source_list_iterator_t *iter);
-source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter);
-void destroy_source_list_iterator(source_list_iterator_t *iter);
-void destroy_source_list(source_list_t *list);
-
 bool build_source_list(project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list, folder_tree_t *folder_tree);
 void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list);
 
@@ -251,58 +227,6 @@ void destroy_project_descriptor(project_descriptor_t *project)
     free(project->sources);
     free(project->path);
     free(project);
-}
-
-static int compare_source_descriptors(source_descriptor_t *first, source_descriptor_t *second)
-{
-    return compare_strings(first->c_file, second->c_file);
-}
-
-static void destroy_source_descriptor(source_descriptor_t *source)
-{
-    free(source->c_file);
-    free(source->obj_file);
-    free(source);
-}
-
-source_list_t *create_source_list()
-{
-    return (source_list_t*)create_tree_set((void*)compare_source_descriptors);
-}
-
-void add_source_to_list(source_list_t *list, project_descriptor_t *project, string_t *c_file, string_t *obj_file)
-{
-    source_descriptor_t *source = nnalloc(sizeof(source_descriptor_t));
-    source->project = project;
-    source->c_file = c_file;
-    source->obj_file = obj_file;
-    if (false == add_item_to_tree_set(&list->base, source))
-        destroy_source_descriptor(source);
-}
-
-source_list_iterator_t * create_iterator_from_source_list(source_list_t *list)
-{
-    return (source_list_iterator_t*)create_iterator_from_tree_set(&list->base);
-}
-
-bool has_next_source_descriptor(source_list_iterator_t *iter)
-{
-    return has_next_item(&iter->base);
-}
-
-source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter)
-{
-    return (source_descriptor_t*)next_item(&iter->base);
-}
-
-void destroy_source_list_iterator(source_list_iterator_t *iter)
-{
-    destroy_iterator(&iter->base);
-}
-
-void destroy_source_list(source_list_t *list)
-{
-    destroy_tree_set_and_content(&list->base, (void*)destroy_source_descriptor);
 }
 
 static string_t * create_c_file_name(string_t path_prefix, string_t *path, string_t *file_name)
