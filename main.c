@@ -58,7 +58,7 @@ source_descriptor_t * get_next_source_descriptor(source_list_iterator_t *iter);
 void destroy_source_list_iterator(source_list_iterator_t *iter);
 void destroy_source_list(source_list_t *list);
 
-bool build_source_list(project_descriptor_t *project, source_list_t *source_list, folder_tree_t *tree);
+bool build_source_list(project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list, folder_tree_t *folder_tree);
 void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list);
 
 int main(void)
@@ -71,10 +71,10 @@ int main(void)
     string_t target = __S("debug");
     folder_tree_t *build_folder = create_folder_tree();
     folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
-    build_source_list(project, source_list, target_folder);
+    vector_t *object_file_list = create_vector();
+    build_source_list(project, source_list, object_file_list, target_folder);
     make_folders(root_folder_name, build_folder);
     string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
-    vector_t *object_file_list = create_vector();
     make_project(target_folder_path, project, source_list, object_file_list);
     destroy_vector_and_content(object_file_list, free);
     free(target_folder_path);
@@ -316,13 +316,14 @@ static string_t * create_c_file_name(string_t path_prefix, string_t *path, strin
     return (string_t*)c_name;
 }
 
-static string_t * create_obj_file_name(string_t *path, string_t *short_c_name)
+const string_t obj_extension = { "o", 1 };
+
+static string_t * create_obj_file_name(string_t *project_name, string_t *path, string_t *short_c_name)
 {
-    const string_t obj_extension = __S("o");
-    string_builder_t *obj_name = NULL;
     file_name_t *fn = split_file_name(*short_c_name);
+    string_builder_t *obj_name = append_formatted_string(NULL, "%S%c", *project_name, path_separator);
     if (path->length > 0 && !are_strings_equal(*path, __S(".")))
-        obj_name = append_formatted_string(NULL, "%S%c", *path, path_separator);
+        obj_name = append_formatted_string(obj_name, "%S%c", *path, path_separator);
     obj_name = append_formatted_string(obj_name, "%S.%S",
         (fn->extension->length == 0 || are_strings_equal(*fn->extension, __S("c"))) ? *fn->name : *short_c_name,
         obj_extension);
@@ -330,7 +331,7 @@ static string_t * create_obj_file_name(string_t *path, string_t *short_c_name)
     return (string_t*)obj_name;
 }
 
-bool build_source_list(project_descriptor_t *project, source_list_t *source_list, folder_tree_t *folder_tree)
+bool build_source_list(project_descriptor_t *project, source_list_t *source_list, vector_t *object_file_list, folder_tree_t *folder_tree)
 {
     folder_tree_t *project_folder = create_folder_subtree(folder_tree, project->fixed_name);
     for (size_t i = 0; i < project->sources_count; i++)
@@ -339,8 +340,9 @@ bool build_source_list(project_descriptor_t *project, source_list_t *source_list
         if (index_of_char_in_string(*fp->file_name, '*') == fp->file_name->length)
         {
             string_t *c_file = create_c_file_name(*project->path, fp->path, fp->file_name); 
-            string_t *obj_file = create_obj_file_name(fp->path, fp->file_name);
+            string_t *obj_file = create_obj_file_name(project->fixed_name, fp->path, fp->file_name);
             add_source_to_list(source_list, project, c_file, obj_file);
+            add_item_to_vector(object_file_list, duplicate_string(*obj_file));
             add_folder_to_tree(project_folder, fp->path);
             if (!file_exists(c_file->data))
             {
@@ -364,7 +366,7 @@ bool build_source_list(project_descriptor_t *project, source_list_t *source_list
                     {
                         found_files = true;
                         string_t *c_file = create_c_file_name(*project->path, fp->path, &file_name);
-                        string_t *obj_file = create_obj_file_name(fp->path, &file_name);
+                        string_t *obj_file = create_obj_file_name(project->fixed_name, fp->path, &file_name);
                         add_source_to_list(source_list, project, c_file, obj_file);
                     }
                 }
@@ -373,7 +375,12 @@ bool build_source_list(project_descriptor_t *project, source_list_t *source_list
             free(folder_path);
             destroy_file_name_template(tmpl);
             if (found_files)
+            {
                 add_folder_to_tree(project_folder, fp->path);
+                string_t *object_files = create_formatted_string("%S%c%S%c*.%S",
+                    *project->fixed_name, path_separator, *fp->path, path_separator, obj_extension);
+                add_item_to_vector(object_file_list, object_files);
+            }
         }
     }
     return true;
@@ -383,22 +390,19 @@ void make_project(string_t *target_folder, project_descriptor_t *project, source
 {
     // building
     printf("Building project %s...\n", project->fixed_name->data);
-    string_t *project_folder = create_formatted_string("%S%c%S", *target_folder, path_separator, *project->fixed_name);
     source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
     while(has_next_source_descriptor(iter))
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
-        string_t *obj_file = create_formatted_string("%S%c%S",
-            *project_folder, path_separator, *source->obj_file);
-        add_item_to_vector(object_file_list, obj_file);
+        string_t *obj_file = create_formatted_string("%S%c%S", *target_folder, path_separator, *source->obj_file);
         string_t *cmd = create_formatted_string("gcc %S -c -g -Werror -o %S", 
             *source->c_file, *obj_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
+        free(obj_file);
     }
     destroy_source_list_iterator(iter);
-    free(project_folder);
 
     // linking
     if (project->type == project_type_application)
@@ -410,7 +414,8 @@ void make_project(string_t *target_folder, project_descriptor_t *project, source
         {
             if (i)
                 objects_string = append_char(objects_string, ' ');
-            objects_string = append_string(objects_string, *((string_t*)object_file_list->data[i]));
+            objects_string = append_formatted_string(objects_string, "%S%c%S", 
+                *target_folder, path_separator, *((string_t*)object_file_list->data[i]));
         }
         string_t *cmd_link = create_formatted_string("gcc %S -o %S%c%S%S",
             *((string_t*)objects_string), *target_folder, path_separator, *project->fixed_name, exe_extension);
