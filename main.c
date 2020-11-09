@@ -272,6 +272,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         {
             project->headers = nnalloc(sizeof(string_t*) * 1);
             string_t * header_path = wide_string_to_string(*elem_headers->value->data.string_value, '?', &bad_folder_name);
+            fix_path_separators(header_path->data);
             project->headers[0] = header_path;
             project->headers_count = 1;
         }
@@ -285,6 +286,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
                 if  (elem_header && elem_header->base.type == json_string)
                 {
                     string_t * header_path = wide_string_to_string(*elem_header->data.string_value, '?', &bad_folder_name);
+                    fix_path_separators(header_path->data);
                     project->headers[project->headers_count++] = header_path;
                 }
                 if (bad_folder_name)
@@ -461,8 +463,13 @@ source_list_t * build_source_list(project_descriptor_t *project, vector_t *objec
     return source_list;
 }
 
-static void add_project_headers_to_list(project_descriptor_t *project, vector_t *header_list)
+static void add_project_headers_to_list(project_descriptor_t *project, vector_t *header_list, tree_set_t *visited_projects)
 {
+    if (is_there_item_in_tree_set(visited_projects, project))
+        return;
+
+    add_item_to_tree_set(visited_projects, project);    
+
     if (!project->headers_count)
         return;
 
@@ -481,12 +488,19 @@ static void add_project_headers_to_list(project_descriptor_t *project, vector_t 
             add_item_to_vector(header_list, duplicate_string(*project->headers[i]));
         }
     }
+
+    for (size_t i = 0; i < project->depends_count; i++)
+    {
+        add_project_headers_to_list(project->depends[i], header_list, visited_projects);
+    }
 }
 
 vector_t * build_header_list(project_descriptor_t *project)
 {
     vector_t *header_list = create_vector();
-    add_project_headers_to_list(project, header_list);
+    tree_set_t *visited_projects = create_tree_set(NULL);
+    add_project_headers_to_list(project, header_list, visited_projects);
+    destroy_tree_set(visited_projects);
     return header_list;
 }
 
