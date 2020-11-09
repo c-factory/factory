@@ -4,5 +4,14 @@
     "author": "c factory",
     "type": "application",
     "sources": ["test/*.c", "test/src/subroutine.c"],
-    "headers": ["test/src"]
+    "headers": ["test/src"],
+    "depends":
+    [
+        {
+            "name": "strings",
+            "path": "../strings",
+            "sources": "*.c",
+            "headers": "."
+        }
+    ]
 }

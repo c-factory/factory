@@ -5,8 +5,11 @@
 #include "files/folders.h"
 #include "source_list.h"
 #include "vector.h"
+#include "tree_map.h"
 #include "allocator.h"
 #include "folder_tree.h"
+#include "graphs/tree.h"
+#include "graphs/tree_traversal.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <dirent.h>
@@ -21,20 +24,23 @@ typedef enum
 
 struct project_descriptor_t
 {
-    wide_string_t  *name;
-    string_t       *fixed_name;
-    wide_string_t  *description;
-    wide_string_t  *author;
-    project_type_t  type;
-    full_path_t   **sources;
-    size_t          sources_count;
-    string_t      **headers;
-    size_t          headers_count;
-    string_t       *path;
+    tree_node_t            base;
+    wide_string_t         *name;
+    string_t              *fixed_name;
+    wide_string_t         *description;
+    wide_string_t         *author;
+    project_type_t         type;
+    full_path_t          **sources;
+    size_t                 sources_count;
+    string_t             **headers;
+    size_t                 headers_count;
+    string_t              *path;
+    project_descriptor_t **depends;
+    size_t                 depends_count;
 };
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
-project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name);
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects);
 void destroy_project_descriptor(project_descriptor_t *project);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
@@ -44,13 +50,15 @@ void make_project(string_t *target_folder, project_descriptor_t *project, source
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
-    project_descriptor_t * project = parse_project_descriptor(root, "factory.json");
+    tree_map_t *all_projects = create_tree_map((void*)compare_strings);
+    project_descriptor_t * project = parse_project_descriptor(root, "factory.json", all_projects);
     destroy_json_element(&root->base);
     string_t root_folder_name = __S("build");
     string_t target = __S("debug");
     folder_tree_t *build_folder = create_folder_tree();
     folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
     vector_t *object_file_list = create_vector();
+    tree_traversal_result_t * sorted_project_list = topological_sort(&project->base);
     source_list_t *source_list = build_source_list(project, object_file_list, target_folder);
     vector_t *header_list = build_header_list(project);
     make_folders(root_folder_name, build_folder);
@@ -61,7 +69,8 @@ int main(void)
     free(target_folder_path);
     destroy_source_list(source_list);
     destroy_folder_tree(build_folder);
-    destroy_project_descriptor(project);
+    destroy_tree_traversal_result(sorted_project_list);
+    destroy_tree_map_and_content(all_projects, NULL, (void*)destroy_project_descriptor);
     return 0;
 }
 
@@ -100,7 +109,25 @@ json_element_t * read_json_from_file(const char *file_name, bool silent_mode)
     return result;
 }
 
-project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name)
+size_t get_number_of_project_descriptor_children(const tree_node_t *iface)
+{
+    const project_descriptor_t *project = (const project_descriptor_t*)iface;
+    return project->depends_count;
+}
+
+tree_node_t * get_child_of_project_descriptor(const tree_node_t *iface, size_t index)
+{
+    const project_descriptor_t *project = (const project_descriptor_t*)iface;
+    return index < project->depends_count ? (tree_node_t*)project->depends[index] : NULL;
+}
+
+static const tree_node_vtbl_t project_descriptor_vtbl =
+{
+    get_number_of_project_descriptor_children,
+    get_child_of_project_descriptor
+};
+
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects)
 {
     if (root->base.type != json_object)
     {
@@ -109,9 +136,6 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         return NULL;
     }
 
-    project_descriptor_t *project = nnalloc(sizeof(project_descriptor_t));
-    memset(project, 0, sizeof(project_descriptor_t));
-
     json_pair_t *elem_name = get_pair_from_json_object(root->data.object, L"name");
     if (!elem_name || elem_name->value->base.type != json_string)
     {
@@ -119,7 +143,19 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
             "'%s', the project descriptor does not contain a name\n", file_name);
         goto error;
     }
-    project->name = duplicate_wide_string(*elem_name->value->data.string_value);
+    wide_string_t *project_name = (wide_string_t*)elem_name->value->data.string_value;
+
+    const pair_t *record = get_pair_from_tree_map(all_projects, project_name);
+    if (record)
+        return (project_descriptor_t*)record->value;
+
+    project_descriptor_t *project = nnalloc(sizeof(project_descriptor_t));
+    memset(project, 0, sizeof(project_descriptor_t));
+    project->base.vtbl = &project_descriptor_vtbl;
+    project->name = duplicate_wide_string(*project_name);
+    add_pair_to_tree_map(all_projects, project->name, project);
+
+    project->name = duplicate_wide_string(*project_name);
     project->fixed_name = wide_string_to_string(*project->name, '_', NULL);
     for (size_t i = 0; i < project->fixed_name->length; i++)
     {
@@ -241,6 +277,30 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         }
     }
 
+    json_pair_t *elem_depends = get_pair_from_json_object(root->data.object, L"depends");
+    if (!elem_depends)
+        elem_depends = get_pair_from_json_object(root->data.object, L"dependencies");
+    if (elem_depends)
+    {
+        if (elem_depends->value->base.type != json_array)
+        {
+            fprintf(stderr,
+                "'%s', invalid format, expected a list of dependencies\n", file_name);
+            goto error;
+        }
+        size_t count = elem_depends->value->data.array->count;
+        project->depends = nnalloc(sizeof(project_descriptor_t*) * count);
+        project->depends_count = count;
+        for (size_t i = 0; i < count; i++)
+        {
+            json_element_t *elem_dependency = get_element_from_json_array(elem_depends->value->data.array, i);
+            project_descriptor_t *other_project = parse_project_descriptor(elem_dependency, file_name, all_projects);
+            if (!other_project)
+                goto error;
+            project->depends[i] = other_project;
+        }
+    }
+
     project->path = duplicate_string(__S("."));
 
     if (!project->sources_count)
@@ -260,7 +320,6 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
     return project;
 
 error:
-    destroy_project_descriptor(project);
     return NULL;
 }
 
@@ -277,6 +336,7 @@ void destroy_project_descriptor(project_descriptor_t *project)
         free(project->headers[i]);
     free(project->headers);
     free(project->path);
+    free(project->depends);
     free(project);
 }
 
