@@ -59,7 +59,7 @@ void make_project(string_t *target_folder, project_build_info_t *info, vector_t 
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
-    tree_map_t *all_projects = create_tree_map((void*)compare_strings);
+    tree_map_t *all_projects = create_tree_map((void*)compare_wide_strings);
     project_descriptor_t * root_project = parse_project_descriptor(root, "factory.json", all_projects, true);
     destroy_json_element(&root->base);
 
