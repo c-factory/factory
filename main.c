@@ -39,37 +39,59 @@ struct project_descriptor_t
     size_t                 depends_count;
 };
 
+typedef struct
+{
+    project_descriptor_t *project;
+    source_list_t *source_list;
+    vector_t *header_list;
+} project_build_info_t;
+
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root);
 void destroy_project_descriptor(project_descriptor_t *project);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
-void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list,
-    vector_t *header_list, vector_t *object_file_list);
+project_build_info_t *calculate_project_build_info(project_descriptor_t *project,
+        vector_t *object_file_list, folder_tree_t *folder_tree);
+void destroy_project_build_info(project_build_info_t *info);
+void make_project(string_t *target_folder, project_build_info_t *info, vector_t *object_file_list);
 
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
     tree_map_t *all_projects = create_tree_map((void*)compare_strings);
-    project_descriptor_t * project = parse_project_descriptor(root, "factory.json", all_projects, true);
+    project_descriptor_t * root_project = parse_project_descriptor(root, "factory.json", all_projects, true);
     destroy_json_element(&root->base);
+
+    vector_t *object_file_list = create_vector();
+
     string_t root_folder_name = __S("build");
     string_t target = __S("debug");
     folder_tree_t *build_folder = create_folder_tree();
     folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
-    vector_t *object_file_list = create_vector();
-    tree_traversal_result_t * sorted_project_list = topological_sort(&project->base);
-    source_list_t *source_list = build_source_list(project, object_file_list, target_folder);
-    vector_t *header_list = build_header_list(project);
+
+    tree_traversal_result_t * sorted_project_list = topological_sort(&root_project->base);
+    size_t count = sorted_project_list->count;
+    vector_t *full_build_info = create_vector_ext(get_system_allocator(), count);
+    for (size_t i = 0; i < count; i++)
+    {
+        project_descriptor_t *project = (project_descriptor_t*)sorted_project_list->list[count - i - 1];
+        project_build_info_t *info = calculate_project_build_info(project, object_file_list, target_folder);
+        add_item_to_vector(full_build_info, info);
+    } 
+    destroy_tree_traversal_result(sorted_project_list);
+
     make_folders(root_folder_name, build_folder);
     string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
-    make_project(target_folder_path, project, source_list, header_list, object_file_list);
+    for (size_t i = 0; i < count; i++)
+    {
+        make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
+    }
+
     destroy_vector_and_content(object_file_list, free);
-    destroy_vector_and_content(header_list, free);
     free(target_folder_path);
-    destroy_source_list(source_list);
     destroy_folder_tree(build_folder);
-    destroy_tree_traversal_result(sorted_project_list);
+    destroy_vector_and_content(full_build_info, (void*)destroy_project_build_info);
     destroy_tree_map_and_content(all_projects, NULL, (void*)destroy_project_descriptor);
     return 0;
 }
@@ -202,7 +224,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
     }
     else
     {
-        project->type = project_type_application;
+        project->type = is_root ? project_type_application : project_type_library;
     }
 
     json_pair_t *elem_sources = get_pair_from_json_object(root->data.object, L"sources");
@@ -312,6 +334,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
                 "'%s', the project path is incorrect\n", file_name);
             goto error;
         }
+        fix_path_separators(project->path->data);
     }
     if (!project->path && is_root)
     {
@@ -467,21 +490,37 @@ vector_t * build_header_list(project_descriptor_t *project)
     return header_list;
 }
 
-void make_project(string_t *target_folder, project_descriptor_t *project, source_list_t *source_list,
-    vector_t *header_list, vector_t *object_file_list)
+project_build_info_t *calculate_project_build_info(project_descriptor_t *project,
+        vector_t *object_file_list, folder_tree_t *folder_tree)
+{
+    project_build_info_t *info = nnalloc(sizeof(project_build_info_t));
+    info->project = project;
+    info->source_list = build_source_list(project, object_file_list, folder_tree);
+    info->header_list = build_header_list(project);
+    return info;
+}
+
+void destroy_project_build_info(project_build_info_t *info)
+{
+    destroy_source_list(info->source_list);
+    destroy_vector_and_content(info->header_list, free);
+    free(info);
+}
+
+void make_project(string_t *target_folder, project_build_info_t *info, vector_t *object_file_list)
 {
     // headers
     string_builder_t *headers_string = NULL;
-    for (size_t i = 0; i < header_list->size; i++)
+    for (size_t i = 0; i < info->header_list->size; i++)
     {
         if (i)
             headers_string = append_char(headers_string, ' ');
-        headers_string = append_formatted_string(headers_string, "-I%S", *((string_t*)header_list->data[i]));
+        headers_string = append_formatted_string(headers_string, "-I%S", *((string_t*)info->header_list->data[i]));
     }
 
     // building
-    printf("Building project %s...\n", project->fixed_name->data);
-    source_list_iterator_t *iter = create_iterator_from_source_list(source_list);
+    printf("Building project %s...\n", info->project->fixed_name->data);
+    source_list_iterator_t *iter = create_iterator_from_source_list(info->source_list);
     while(has_next_source_descriptor(iter))
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
@@ -497,7 +536,7 @@ void make_project(string_t *target_folder, project_descriptor_t *project, source
     free(headers_string);
 
     // linking
-    if (project->type == project_type_application)
+    if (info->project->type == project_type_application)
     {
         printf("Linking...\n");
         const string_t exe_extension = __S(".exe");
@@ -510,7 +549,7 @@ void make_project(string_t *target_folder, project_descriptor_t *project, source
                 *target_folder, path_separator, *((string_t*)object_file_list->data[i]));
         }
         string_t *cmd_link = create_formatted_string("gcc %S -o %S%c%S%S",
-            *((string_t*)objects_string), *target_folder, path_separator, *project->fixed_name, exe_extension);
+            *((string_t*)objects_string), *target_folder, path_separator, *info->project->fixed_name, exe_extension);
         printf("%s\n", cmd_link->data);
         system(cmd_link->data);
         free(cmd_link);

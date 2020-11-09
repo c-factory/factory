@@ -10,7 +10,7 @@
         {
             "name": "strings",
             "path": "../strings",
-            "sources": "*.c",
+            "sources": "strings.c",
             "headers": "."
         }
     ]
