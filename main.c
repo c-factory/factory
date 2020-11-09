@@ -40,7 +40,7 @@ struct project_descriptor_t
 };
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
-project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects);
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root);
 void destroy_project_descriptor(project_descriptor_t *project);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
@@ -51,7 +51,7 @@ int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
     tree_map_t *all_projects = create_tree_map((void*)compare_strings);
-    project_descriptor_t * project = parse_project_descriptor(root, "factory.json", all_projects);
+    project_descriptor_t * project = parse_project_descriptor(root, "factory.json", all_projects, true);
     destroy_json_element(&root->base);
     string_t root_folder_name = __S("build");
     string_t target = __S("debug");
@@ -127,7 +127,7 @@ static const tree_node_vtbl_t project_descriptor_vtbl =
     get_child_of_project_descriptor
 };
 
-project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects)
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root)
 {
     if (root->base.type != json_object)
     {
@@ -294,14 +294,29 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         for (size_t i = 0; i < count; i++)
         {
             json_element_t *elem_dependency = get_element_from_json_array(elem_depends->value->data.array, i);
-            project_descriptor_t *other_project = parse_project_descriptor(elem_dependency, file_name, all_projects);
+            project_descriptor_t *other_project = parse_project_descriptor(elem_dependency, file_name, all_projects, false);
             if (!other_project)
                 goto error;
             project->depends[i] = other_project;
         }
     }
 
-    project->path = duplicate_string(__S("."));
+    json_pair_t *elem_path = get_pair_from_json_object(root->data.object, L"path");
+    if (elem_path && elem_path->value->base.type == json_string)
+    {
+        bool bad_folder_name = false;
+        project->path = wide_string_to_string(*elem_path->value->data.string_value, '?', &bad_folder_name);
+        if (bad_folder_name)
+        {
+            fprintf(stderr,
+                "'%s', the project path is incorrect\n", file_name);
+            goto error;
+        }
+    }
+    if (!project->path && is_root)
+    {
+        project->path = duplicate_string(__S("."));
+    }
 
     if (!project->sources_count)
     {
