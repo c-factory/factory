@@ -24,19 +24,28 @@ typedef enum
 
 struct project_descriptor_t
 {
-    tree_node_t            base;
-    wide_string_t         *name;
-    string_t              *fixed_name;
-    wide_string_t         *description;
-    wide_string_t         *author;
-    project_type_t         type;
-    full_path_t          **sources;
-    size_t                 sources_count;
-    string_t             **headers;
-    size_t                 headers_count;
-    string_t              *path;
-    project_descriptor_t **depends;
-    size_t                 depends_count;
+    tree_node_t                base;
+    wide_string_t             *name;
+    string_t                  *fixed_name;
+    wide_string_t             *description;
+    wide_string_t             *author;
+    project_type_t             type;
+    struct
+    {
+        full_path_t          **list;
+        size_t                 count;
+    } sources;
+    struct
+    {
+        string_t             **list;
+        size_t                 count;
+    } headers;
+    string_t                  *path;
+    struct
+    {
+        project_descriptor_t **list;
+        size_t                 count;
+    } depends;
 };
 
 typedef struct
@@ -136,13 +145,13 @@ json_element_t * read_json_from_file(const char *file_name, bool silent_mode)
 size_t get_number_of_project_descriptor_children(const tree_node_t *iface)
 {
     const project_descriptor_t *project = (const project_descriptor_t*)iface;
-    return project->depends_count;
+    return project->depends.count;
 }
 
 tree_node_t * get_child_of_project_descriptor(const tree_node_t *iface, size_t index)
 {
     const project_descriptor_t *project = (const project_descriptor_t*)iface;
-    return index < project->depends_count ? (tree_node_t*)project->depends[index] : NULL;
+    return index < project->depends.count ? (tree_node_t*)project->depends.list[index] : NULL;
 }
 
 static const tree_node_vtbl_t project_descriptor_vtbl =
@@ -235,23 +244,23 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         bool bad_file_name = false;
         if (elem_sources->value->base.type == json_string)
         {
-            project->sources = nnalloc(sizeof(full_path_t*) * 1);
+            project->sources.list = nnalloc(sizeof(full_path_t*) * 1);
             string_t * full_path = wide_string_to_string(*elem_sources->value->data.string_value, '?', &bad_file_name);
-            project->sources[0] = split_path(*full_path);
+            project->sources.list[0] = split_path(*full_path);
             free(full_path);
-            project->sources_count = 1;
+            project->sources.count = 1;
         }
         else if (elem_sources->value->base.type == json_array)
         {
             size_t count = elem_sources->value->data.array->count;
-            project->sources = nnalloc(sizeof(full_path_t*) * count);
+            project->sources.list = nnalloc(sizeof(full_path_t*) * count);
             for (size_t i = 0; i < count; i++)
             {
                 json_element_t *elem_source = get_element_from_json_array(elem_sources->value->data.array, i);
                 if  (elem_source && elem_source->base.type == json_string)
                 {
                     string_t * full_path = wide_string_to_string(*elem_source->data.string_value, '?', &bad_file_name);
-                    project->sources[project->sources_count++] = split_path(*full_path);
+                    project->sources.list[project->sources.count++] = split_path(*full_path);
                     free(full_path);
                 }
                 if (bad_file_name)
@@ -272,16 +281,16 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         bool bad_folder_name = false;
         if (elem_headers->value->base.type == json_string)
         {
-            project->headers = nnalloc(sizeof(string_t*) * 1);
+            project->headers.list = nnalloc(sizeof(string_t*) * 1);
             string_t * header_path = wide_string_to_string(*elem_headers->value->data.string_value, '?', &bad_folder_name);
             fix_path_separators(header_path->data);
-            project->headers[0] = header_path;
-            project->headers_count = 1;
+            project->headers.list[0] = header_path;
+            project->headers.count = 1;
         }
         else if (elem_headers->value->base.type == json_array)
         {
             size_t count = elem_headers->value->data.array->count;
-            project->headers = nnalloc(sizeof(string_t*) * count);
+            project->headers.list = nnalloc(sizeof(string_t*) * count);
             for (size_t i = 0; i < count; i++)
             {
                 json_element_t *elem_header = get_element_from_json_array(elem_headers->value->data.array, i);
@@ -289,7 +298,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
                 {
                     string_t * header_path = wide_string_to_string(*elem_header->data.string_value, '?', &bad_folder_name);
                     fix_path_separators(header_path->data);
-                    project->headers[project->headers_count++] = header_path;
+                    project->headers.list[project->headers.count] = header_path;
                 }
                 if (bad_folder_name)
                     break;
@@ -315,15 +324,15 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
             goto error;
         }
         size_t count = elem_depends->value->data.array->count;
-        project->depends = nnalloc(sizeof(project_descriptor_t*) * count);
-        project->depends_count = count;
+        project->depends.list = nnalloc(sizeof(project_descriptor_t*) * count);
+        project->depends.count = count;
         for (size_t i = 0; i < count; i++)
         {
             json_element_t *elem_dependency = get_element_from_json_array(elem_depends->value->data.array, i);
             project_descriptor_t *other_project = parse_project_descriptor(elem_dependency, file_name, all_projects, false);
             if (!other_project)
                 goto error;
-            project->depends[i] = other_project;
+            project->depends.list[i] = other_project;
         }
     }
 
@@ -345,14 +354,14 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         project->path = duplicate_string(__S("."));
     }
 
-    if (!project->sources_count)
+    if (!project->sources.count)
     {
         fprintf(stderr,
             "'%s', the project descriptor does not contain a list of source files\n", file_name);
         goto error;
     }
 
-    if (project->type == project_type_library && !project->headers_count)
+    if (project->type == project_type_library && !project->headers.count)
     {
         fprintf(stderr,
             "'%s', the library project descriptor does not contain a list of headers\n", file_name);
@@ -371,14 +380,14 @@ void destroy_project_descriptor(project_descriptor_t *project)
     free(project->fixed_name);
     free(project->description);
     free(project->author);
-    for (size_t i = 0; i < project->sources_count; i++)
-        destroy_full_path(project->sources[i]);
-    free(project->sources);
-    for (size_t i = 0; i < project->headers_count; i++)
-        free(project->headers[i]);
-    free(project->headers);
+    for (size_t i = 0; i < project->sources.count; i++)
+        destroy_full_path(project->sources.list[i]);
+    free(project->sources.list);
+    for (size_t i = 0; i < project->headers.count; i++)
+        free(project->headers.list[i]);
+    free(project->headers.list);
     free(project->path);
-    free(project->depends);
+    free(project->depends.list);
     free(project);
 }
 
@@ -412,9 +421,9 @@ source_list_t * build_source_list(project_descriptor_t *project, vector_t *objec
 {
     source_list_t *source_list = create_source_list();
     folder_tree_t *project_folder = create_folder_subtree(folder_tree, project->fixed_name);
-    for (size_t i = 0; i < project->sources_count; i++)
+    for (size_t i = 0; i < project->sources.count; i++)
     {
-        full_path_t *fp = project->sources[i];
+        full_path_t *fp = project->sources.list[i];
         if (index_of_char_in_string(*fp->file_name, '*') == fp->file_name->length)
         {
             string_t *c_file = create_c_file_name(*project->path, fp->path, fp->file_name); 
@@ -472,28 +481,28 @@ static void add_project_headers_to_list(project_descriptor_t *project, vector_t 
 
     add_item_to_tree_set(visited_projects, project);    
 
-    if (!project->headers_count)
+    if (!project->headers.count)
         return;
 
     if (project->path->length > 0 && !are_strings_equal(*project->path, __S(".")))
     {
-        for (size_t i = 0; i < project->headers_count; i++)
+        for (size_t i = 0; i < project->headers.count; i++)
         {
-            string_t *header = create_formatted_string("%S%c%S", *project->path, path_separator, *project->headers[i]);
+            string_t *header = create_formatted_string("%S%c%S", *project->path, path_separator, *project->headers.list[i]);
             add_item_to_vector(header_list, header);
         }
     }
     else
     {
-        for (size_t i = 0; i < project->headers_count; i++)
+        for (size_t i = 0; i < project->headers.count; i++)
         {
-            add_item_to_vector(header_list, duplicate_string(*project->headers[i]));
+            add_item_to_vector(header_list, duplicate_string(*project->headers.list[i]));
         }
     }
 
-    for (size_t i = 0; i < project->depends_count; i++)
+    for (size_t i = 0; i < project->depends.count; i++)
     {
-        add_project_headers_to_list(project->depends[i], header_list, visited_projects);
+        add_project_headers_to_list(project->depends.list[i], header_list, visited_projects);
     }
 }
 
