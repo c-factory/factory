@@ -14,6 +14,9 @@
 #include <stdio.h>
 #include <dirent.h>
 
+string_t build_folder_name = { "build", 5 };
+string_t ext_folder_name = { "ext", 3 };
+
 typedef struct project_descriptor_t project_descriptor_t;
 
 typedef enum
@@ -62,9 +65,10 @@ typedef struct
 } project_build_info_t;
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
-project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root);
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects,
+    bool is_root, bool is_temporary);
 project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_project);
-bool resolve_dependencies(project_descriptor_t *project);
+bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_projects);
 void destroy_project_descriptor(project_descriptor_t *project);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
@@ -73,11 +77,24 @@ project_build_info_t *calculate_project_build_info(project_descriptor_t *project
 void destroy_project_build_info(project_build_info_t *info);
 void make_project(string_t *target_folder, project_build_info_t *info, vector_t *object_file_list);
 
+static string_t * make_path_2(string_t first_part, string_t second_part)
+{
+    size_t length = first_part.length + second_part.length + 1;
+    string_t *path = nnalloc(sizeof(string_t) + length + 1);
+    path->data = (char*)(path + 1);
+    path->length = length;
+    memcpy(path->data, first_part.data, first_part.length);
+    path->data[first_part.length] = path_separator;
+    memcpy(path->data + first_part.length + 1, second_part.data, second_part.length);
+    path->data[length] = '\0';
+    return path;
+}
+
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
     tree_map_t *all_projects = create_tree_map((void*)compare_wide_strings);
-    project_descriptor_t * root_project = parse_project_descriptor(root, "factory.json", all_projects, true);
+    project_descriptor_t * root_project = parse_project_descriptor(root, "factory.json", all_projects, true, false);
     destroy_json_element(&root->base);
     if (!root_project)
         goto cleanup;
@@ -85,7 +102,7 @@ int main(void)
     project_descriptor_t * unresolved_project = get_first_unresolved_project(root_project);
     while (unresolved_project)
     {
-        if (!resolve_dependencies(unresolved_project))
+        if (!resolve_dependencies(unresolved_project, all_projects))
         {
             fprintf(stderr,
                 "The project '%s' contains unresolved dependencies\n", unresolved_project->fixed_name->data);
@@ -96,7 +113,6 @@ int main(void)
 
     vector_t *object_file_list = create_vector();
 
-    string_t root_folder_name = __S("build");
     string_t target = __S("debug");
     folder_tree_t *build_folder = create_folder_tree();
     folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
@@ -112,8 +128,8 @@ int main(void)
     } 
     destroy_tree_traversal_result(sorted_project_list);
 
-    make_folders(root_folder_name, build_folder);
-    string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
+    make_folders(build_folder_name, build_folder);
+    string_t *target_folder_path = create_formatted_string("%S%c%S", build_folder_name, path_separator, target);
     for (size_t i = 0; i < count; i++)
     {
         make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
@@ -182,7 +198,8 @@ static const tree_node_vtbl_t project_descriptor_vtbl =
     get_child_of_project_descriptor
 };
 
-project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root)
+project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects,
+    bool is_root, bool is_temporary)
 {
     if (root->base.type != json_object)
     {
@@ -200,15 +217,19 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
     }
     wide_string_t *project_name = (wide_string_t*)elem_name->value->data.string_value;
 
-    const pair_t *record = get_pair_from_tree_map(all_projects, project_name);
-    if (record)
-        return (project_descriptor_t*)record->value;
+    if (!is_temporary)
+    {
+        const pair_t *record = get_pair_from_tree_map(all_projects, project_name);
+        if (record)
+            return (project_descriptor_t*)record->value;
+    }
 
     project_descriptor_t *project = nnalloc(sizeof(project_descriptor_t));
     memset(project, 0, sizeof(project_descriptor_t));
     project->base.vtbl = &project_descriptor_vtbl;
     project->name = duplicate_wide_string(*project_name);
-    add_pair_to_tree_map(all_projects, project->name, project);
+    if (!is_temporary)
+        add_pair_to_tree_map(all_projects, project->name, project);
 
     project->name = duplicate_wide_string(*project_name);
     project->fixed_name = wide_string_to_string(*project->name, '_', NULL);
@@ -351,7 +372,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         for (size_t i = 0; i < count; i++)
         {
             json_element_t *elem_dependency = get_element_from_json_array(elem_depends->value->data.array, i);
-            project_descriptor_t *other_project = parse_project_descriptor(elem_dependency, file_name, all_projects, false);
+            project_descriptor_t *other_project = parse_project_descriptor(elem_dependency, file_name, all_projects, false, false);
             if (!other_project)
                 goto error;
             project->depends.list[i] = other_project;
@@ -463,12 +484,87 @@ project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_p
     return NULL;
 }
 
-bool resolve_dependencies(project_descriptor_t *project)
+bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_projects)
 {
     if (!project->unresolved)
         return true;
 
-    return false;
+    bool result = true;
+    string_t *project_folder = NULL;
+    string_t *factory_json_path = NULL;
+
+    if (!project->path)
+    {
+        if (!project->url.count)
+        {
+            fprintf(stderr,
+                "The project '%s' contains no URL where to download it\n", project->fixed_name->data);
+            return false;
+        }
+
+        bool no_sources = false;
+
+        if (!folder_exists(ext_folder_name.data))
+        {
+            no_sources = true;
+            if (0 != mkdir(ext_folder_name.data))
+            {
+                fprintf(stderr,
+                    "Couldn't create folder '%s'\n", ext_folder_name.data);
+                return false;
+            }
+        }
+        project_folder = make_path_2(ext_folder_name, *project->fixed_name);
+        if (no_sources || !folder_exists(project_folder->data))
+        {
+            no_sources = true;
+            if (0 != mkdir(project_folder->data))
+            {
+                fprintf(stderr,
+                    "Couldn't create folder '%s'\n", project_folder->data);
+                return false;
+            }
+        }
+        factory_json_path = make_path_2(*project_folder, __S("factory.json"));
+        if (!file_exists(factory_json_path->data))
+        {
+            no_sources = true;
+        }
+
+        if (no_sources)
+        {
+            string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[0], *project_folder);
+            printf("%s\n", cmd->data);
+            system(cmd->data);
+            free(cmd);
+        }
+
+        project->path = project_folder;
+        project_folder = NULL;
+
+        json_element_t *root = read_json_from_file(factory_json_path->data, false);
+        project_descriptor_t * temporary_project = parse_project_descriptor(root, factory_json_path->data, all_projects, true, true);
+        // TODO: merge it correctly
+        project->sources = temporary_project->sources;
+        temporary_project->sources.list = NULL;
+        temporary_project->sources.count = 0;
+        project->headers = temporary_project->headers;
+        temporary_project->headers.list = NULL;
+        temporary_project->headers.count = 0;
+        destroy_json_element(&root->base);
+        destroy_project_descriptor(temporary_project);
+    }
+
+    project->unresolved = false;
+    goto cleanup;
+
+error:
+    result = false;
+
+cleanup:
+    free(project_folder);
+    free(factory_json_path);
+    return result;
 }
 
 void destroy_project_descriptor(project_descriptor_t *project)
