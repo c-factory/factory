@@ -64,6 +64,7 @@ typedef struct
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root);
 project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_project);
+bool resolve_dependencies(project_descriptor_t *project);
 void destroy_project_descriptor(project_descriptor_t *project);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
@@ -82,11 +83,15 @@ int main(void)
         goto cleanup;
 
     project_descriptor_t * unresolved_project = get_first_unresolved_project(root_project);
-    if (get_first_unresolved_project(root_project))
+    while (unresolved_project)
     {
-        fprintf(stderr,
-            "The project '%s' contains unresolved dependencies\n", unresolved_project->fixed_name->data);
-        goto cleanup;
+        if (!resolve_dependencies(unresolved_project))
+        {
+            fprintf(stderr,
+                "The project '%s' contains unresolved dependencies\n", unresolved_project->fixed_name->data);
+            goto cleanup;
+        }
+        unresolved_project = get_first_unresolved_project(root_project);
     }
 
     vector_t *object_file_list = create_vector();
@@ -456,6 +461,14 @@ project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_p
             return project;
     }
     return NULL;
+}
+
+bool resolve_dependencies(project_descriptor_t *project)
+{
+    if (!project->unresolved)
+        return true;
+
+    return false;
 }
 
 void destroy_project_descriptor(project_descriptor_t *project)
