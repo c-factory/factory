@@ -46,6 +46,12 @@ struct project_descriptor_t
         project_descriptor_t **list;
         size_t                 count;
     } depends;
+    struct
+    {
+        string_t             **list;
+        size_t                 count;
+    } url;
+    bool                       unresolved;
 };
 
 typedef struct
@@ -57,6 +63,7 @@ typedef struct
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects, bool is_root);
+project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_project);
 void destroy_project_descriptor(project_descriptor_t *project);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
@@ -71,38 +78,48 @@ int main(void)
     tree_map_t *all_projects = create_tree_map((void*)compare_wide_strings);
     project_descriptor_t * root_project = parse_project_descriptor(root, "factory.json", all_projects, true);
     destroy_json_element(&root->base);
-    if (root_project)
+    if (!root_project)
+        goto cleanup;
+
+    project_descriptor_t * unresolved_project = get_first_unresolved_project(root_project);
+    if (get_first_unresolved_project(root_project))
     {
-        vector_t *object_file_list = create_vector();
-
-        string_t root_folder_name = __S("build");
-        string_t target = __S("debug");
-        folder_tree_t *build_folder = create_folder_tree();
-        folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
-
-        tree_traversal_result_t * sorted_project_list = topological_sort(&root_project->base);
-        size_t count = sorted_project_list->count;
-        vector_t *full_build_info = create_vector_ext(get_system_allocator(), count);
-        for (size_t i = 0; i < count; i++)
-        {
-            project_descriptor_t *project = (project_descriptor_t*)sorted_project_list->list[count - i - 1];
-            project_build_info_t *info = calculate_project_build_info(project, object_file_list, target_folder);
-            add_item_to_vector(full_build_info, info);
-        } 
-        destroy_tree_traversal_result(sorted_project_list);
-
-        make_folders(root_folder_name, build_folder);
-        string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
-        for (size_t i = 0; i < count; i++)
-        {
-            make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
-        }
-
-        destroy_vector_and_content(object_file_list, free);
-        free(target_folder_path);
-        destroy_folder_tree(build_folder);
-        destroy_vector_and_content(full_build_info, (void*)destroy_project_build_info);
+        fprintf(stderr,
+            "The project '%s' contains unresolved dependencies\n", unresolved_project->fixed_name->data);
+        goto cleanup;
     }
+
+    vector_t *object_file_list = create_vector();
+
+    string_t root_folder_name = __S("build");
+    string_t target = __S("debug");
+    folder_tree_t *build_folder = create_folder_tree();
+    folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
+
+    tree_traversal_result_t * sorted_project_list = topological_sort(&root_project->base);
+    size_t count = sorted_project_list->count;
+    vector_t *full_build_info = create_vector_ext(get_system_allocator(), count);
+    for (size_t i = 0; i < count; i++)
+    {
+        project_descriptor_t *project = (project_descriptor_t*)sorted_project_list->list[count - i - 1];
+        project_build_info_t *info = calculate_project_build_info(project, object_file_list, target_folder);
+        add_item_to_vector(full_build_info, info);
+    } 
+    destroy_tree_traversal_result(sorted_project_list);
+
+    make_folders(root_folder_name, build_folder);
+    string_t *target_folder_path = create_formatted_string("%S%c%S", root_folder_name, path_separator, target);
+    for (size_t i = 0; i < count; i++)
+    {
+        make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
+    }
+
+    destroy_vector_and_content(object_file_list, free);
+    free(target_folder_path);
+    destroy_folder_tree(build_folder);
+    destroy_vector_and_content(full_build_info, (void*)destroy_project_build_info);
+
+cleanup:
     destroy_tree_map_and_content(all_projects, NULL, (void*)destroy_project_descriptor);
     return 0;
 }
@@ -298,7 +315,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
                 {
                     string_t * header_path = wide_string_to_string(*elem_header->data.string_value, '?', &bad_folder_name);
                     fix_path_separators(header_path->data);
-                    project->headers.list[project->headers.count] = header_path;
+                    project->headers.list[project->headers.count++] = header_path;
                 }
                 if (bad_folder_name)
                     break;
@@ -349,28 +366,95 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         }
         fix_path_separators(project->path->data);
     }
-    if (!project->path && is_root)
+
+    json_pair_t *elem_url = get_pair_from_json_object(root->data.object, L"url");
+    if (elem_url)
     {
-        project->path = duplicate_string(__S("."));
+        bool bad_url = false;
+        if (elem_url->value->base.type == json_string)
+        {
+            project->url.list = nnalloc(sizeof(string_t*) * 1);
+            string_t * url = wide_string_to_string(*elem_url->value->data.string_value, '#', &bad_url);
+            project->url.list[0] = url;
+            project->url.count = 1;
+        }
+        else if (elem_url->value->base.type == json_array)
+        {
+            size_t count = elem_url->value->data.array->count;
+            project->url.list = nnalloc(sizeof(string_t*) * count);
+            for (size_t i = 0; i < count; i++)
+            {
+                json_element_t *elem_one_url = get_element_from_json_array(elem_headers->value->data.array, i);
+                if  (elem_one_url && elem_one_url->base.type == json_string)
+                {
+                    string_t * url = wide_string_to_string(*elem_one_url->data.string_value, '?', &bad_url);
+                    project->url.list[project->url.count++] = url;
+                }
+                if (bad_url)
+                    break;
+            }
+        }
+        if (bad_url)
+        {
+            fprintf(stderr,
+                "'%s', the project URL is incorrect\n", file_name);
+            goto error;
+        }
+    }
+
+    if (!project->path)
+    {
+        if (is_root)
+            project->path = duplicate_string(__S("."));
+        else
+            project->unresolved = true;        
     }
 
     if (!project->sources.count)
     {
-        fprintf(stderr,
-            "'%s', the project descriptor does not contain a list of source files\n", file_name);
-        goto error;
+        if (is_root || project->path)
+        {
+            fprintf(stderr,
+                "'%s', the project descriptor does not contain a list of source files\n", file_name);
+            goto error;
+        }
+        else
+        {
+            project->unresolved = true;        
+        }        
     }
 
     if (project->type == project_type_library && !project->headers.count)
     {
-        fprintf(stderr,
-            "'%s', the library project descriptor does not contain a list of headers\n", file_name);
-        goto error;
+        if (project->path)
+        {
+            fprintf(stderr,
+                "'%s', the library project descriptor does not contain a list of headers\n", file_name);
+            goto error;
+        }
+        else
+        {
+            project->unresolved = true;        
+        }        
     }
 
     return project;
 
 error:
+    return NULL;
+}
+
+project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_project)
+{
+    if (root_project->unresolved)
+        return root_project;
+
+    for (size_t i = 0; i < root_project->depends.count; i++)
+    {
+        project_descriptor_t *project = get_first_unresolved_project(root_project->depends.list[i]);
+        if (project)
+            return project;
+    }
     return NULL;
 }
 
@@ -388,6 +472,9 @@ void destroy_project_descriptor(project_descriptor_t *project)
     free(project->headers.list);
     free(project->path);
     free(project->depends.list);
+    for (size_t i = 0; i < project->url.count; i++)
+        free(project->url.list[i]);
+    free(project->url.list);
     free(project);
 }
 
