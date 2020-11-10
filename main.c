@@ -551,6 +551,9 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
         project->headers = temporary_project->headers;
         temporary_project->headers.list = NULL;
         temporary_project->headers.count = 0;
+        project->depends = temporary_project->depends;
+        temporary_project->depends.list = NULL;
+        temporary_project->depends.count = 0;
         destroy_json_element(&root->base);
         destroy_project_descriptor(temporary_project);
     }

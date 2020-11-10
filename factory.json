@@ -8,8 +8,8 @@
     "depends":
     [
         {
-            "name": "collections",
-            "url": "https://github.com/c-factory/collections.git"
+            "name": "strings",
+            "url": "https://github.com/c-factory/strings.git"
         }
     ]
 }
