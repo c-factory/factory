@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-void do_something()
+void do_something(const char *s)
 {
-    printf("it works!\n");
+    printf("%s\n", s);
 }

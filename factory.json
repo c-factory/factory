@@ -8,19 +8,8 @@
     "depends":
     [
         {
-            "name": "strings",
-            "path": "../strings",
-            "sources": "strings.c",
-            "headers": ".",
-            "depends":
-            [
-                {
-                    "name": "collections",
-                    "path": "../collections",
-                    "sources": "src/*.c",
-                    "headers": "include"
-                }
-            ]
+            "name": "collections",
+            "url": "https://github.com/c-factory/collections.git"
         }
     ]
 }
