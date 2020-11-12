@@ -7,7 +7,7 @@
 #pragma once
 
 #include "tree_set.h"
-#include "strings/strings.h"
+#include "strings.h"
 
 typedef struct project_descriptor_t project_descriptor_t;
 

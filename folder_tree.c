@@ -5,8 +5,8 @@
 */
 
 #include "folder_tree.h"
-#include "files/path.h"
-#include "files/folders.h"
+#include "path.h"
+#include "folders.h"
 #include <dirent.h>
 
 folder_tree_t *create_folder_tree()

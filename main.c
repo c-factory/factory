@@ -1,15 +1,17 @@
-#include "strings/strings.h"
-#include "json/json.h"
-#include "files/path.h"
-#include "files/files.h"
-#include "files/folders.h"
-#include "source_list.h"
+#include "strings.h"
+#include "json.h"
+#include "path.h"
+#include "files.h"
+#include "folders.h"
 #include "vector.h"
 #include "tree_map.h"
 #include "allocator.h"
+#include "tree.h"
+#include "tree_traversal.h"
+
+#include "source_list.h"
 #include "folder_tree.h"
-#include "graphs/tree.h"
-#include "graphs/tree_traversal.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <dirent.h>
@@ -410,7 +412,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
             project->url.list = nnalloc(sizeof(string_t*) * count);
             for (size_t i = 0; i < count; i++)
             {
-                json_element_t *elem_one_url = get_element_from_json_array(elem_headers->value->data.array, i);
+                json_element_t *elem_one_url = get_element_from_json_array(elem_url->value->data.array, i);
                 if  (elem_one_url && elem_one_url->base.type == json_string)
                 {
                     string_t * url = wide_string_to_string(*elem_one_url->data.string_value, '?', &bad_url);
@@ -680,22 +682,22 @@ static void add_project_headers_to_list(project_descriptor_t *project, vector_t 
 
     add_item_to_tree_set(visited_projects, project);    
 
-    if (!project->headers.count)
-        return;
-
-    if (project->path->length > 0 && !are_strings_equal(*project->path, __S(".")))
+    if (project->headers.count)
     {
-        for (size_t i = 0; i < project->headers.count; i++)
+        if (project->path->length > 0 && !are_strings_equal(*project->path, __S(".")))
         {
-            string_t *header = create_formatted_string("%S%c%S", *project->path, path_separator, *project->headers.list[i]);
-            add_item_to_vector(header_list, header);
+            for (size_t i = 0; i < project->headers.count; i++)
+            {
+                string_t *header = create_formatted_string("%S%c%S", *project->path, path_separator, *project->headers.list[i]);
+                add_item_to_vector(header_list, header);
+            }
         }
-    }
-    else
-    {
-        for (size_t i = 0; i < project->headers.count; i++)
+        else
         {
-            add_item_to_vector(header_list, duplicate_string(*project->headers.list[i]));
+            for (size_t i = 0; i < project->headers.count; i++)
+            {
+                add_item_to_vector(header_list, duplicate_string(*project->headers.list[i]));
+            }
         }
     }
 

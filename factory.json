@@ -3,13 +3,29 @@
     "description": "The build system for C programs",
     "author": "c factory",
     "type": "application",
-    "sources": ["test/*.c", "test/src/subroutine.c"],
-    "headers": ["test/src"],
+    "sources": "*.c",
     "depends":
     [
         {
+            "name": "collections",
+            "url": ["../collections", "https://github.com/c-factory/collections.git"]
+        },
+        {
             "name": "strings",
-            "url": "https://github.com/c-factory/strings.git"
+            "url": ["../strings", "https://github.com/c-factory/strings.git"]
+        },
+        {
+            "name": "json",
+            "url": ["../json", "https://github.com/c-factory/json.git"]
+        },
+        {
+            "name": "files",
+            "url": ["../files", "https://github.com/c-factory/files.git"]
+        },
+        {
+            "name": "graphs",
+            "url": ["../graphs", "https://github.com/c-factory/graphs.git"]
         }
     ]
 }
+
