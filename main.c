@@ -535,10 +535,24 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
 
         if (no_sources)
         {
-            string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[0], *project_folder);
-            printf("%s\n", cmd->data);
-            system(cmd->data);
-            free(cmd);
+            bool downloaded = false;
+            for (size_t i = 0; i < project->url.count; i++)
+            {
+                string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[i], *project_folder);
+                printf("%s\n", cmd->data);
+                int exec_result = system(cmd->data);
+                free(cmd);
+                if (exec_result == 0)
+                {
+                    downloaded = true;
+                    break;
+                }
+            }
+            if (!downloaded) {
+                fprintf(stderr,
+                    "Couldn't download sources of the project '%s'\n", project->fixed_name->data);
+                goto error;
+            }
         }
 
         project->path = project_folder;

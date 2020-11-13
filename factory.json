@@ -8,24 +8,23 @@
     [
         {
             "name": "collections",
-            "url": ["../collections", "https://github.com/c-factory/collections.git"]
+            "url": "https://github.com/c-factory/collections.git"
         },
         {
             "name": "strings",
-            "url": ["../strings", "https://github.com/c-factory/strings.git"]
+            "url": "https://github.com/c-factory/strings.git"
         },
         {
             "name": "json",
-            "url": ["../json", "https://github.com/c-factory/json.git"]
+            "url": "https://github.com/c-factory/json.git"
         },
         {
             "name": "files",
-            "url": ["../files", "https://github.com/c-factory/files.git"]
+            "url": "https://github.com/c-factory/files.git"
         },
         {
             "name": "graphs",
-            "url": ["../graphs", "https://github.com/c-factory/graphs.git"]
+            "url": "https://github.com/c-factory/graphs.git"
         }
     ]
 }
-
