@@ -72,6 +72,7 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
 project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_project);
 bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_projects);
 void destroy_project_descriptor(project_descriptor_t *project);
+bool make_target(string_t target, tree_traversal_result_t * sorted_project_list);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
 vector_t * build_header_list(project_descriptor_t *project);
 project_build_info_t *calculate_project_build_info(project_descriptor_t *project,
@@ -113,34 +114,10 @@ int main(void)
         unresolved_project = get_first_unresolved_project(root_project);
     }
 
-    vector_t *object_file_list = create_vector();
-
-    string_t target = __S("debug");
-    folder_tree_t *build_folder = create_folder_tree();
-    folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
-
     tree_traversal_result_t * sorted_project_list = topological_sort(&root_project->base);
-    size_t count = sorted_project_list->count;
-    vector_t *full_build_info = create_vector_ext(get_system_allocator(), count);
-    for (size_t i = 0; i < count; i++)
-    {
-        project_descriptor_t *project = (project_descriptor_t*)sorted_project_list->list[count - i - 1];
-        project_build_info_t *info = calculate_project_build_info(project, object_file_list, target_folder);
-        add_item_to_vector(full_build_info, info);
-    } 
+    make_target(__S("debug"), sorted_project_list);
+    make_target(__S("release"), sorted_project_list);
     destroy_tree_traversal_result(sorted_project_list);
-
-    make_folders(build_folder_name, build_folder);
-    string_t *target_folder_path = create_formatted_string("%S%c%S", build_folder_name, path_separator, target);
-    for (size_t i = 0; i < count; i++)
-    {
-        make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
-    }
-
-    destroy_vector_and_content(object_file_list, free);
-    free(target_folder_path);
-    destroy_folder_tree(build_folder);
-    destroy_vector_and_content(full_build_info, (void*)destroy_project_build_info);
 
 cleanup:
     destroy_tree_map_and_content(all_projects, NULL, (void*)destroy_project_descriptor);
@@ -604,6 +581,35 @@ void destroy_project_descriptor(project_descriptor_t *project)
         free(project->url.list[i]);
     free(project->url.list);
     free(project);
+}
+
+bool make_target(string_t target, tree_traversal_result_t * sorted_project_list)
+{
+    size_t count = sorted_project_list->count;
+    vector_t *object_file_list = create_vector();
+    folder_tree_t *build_folder = create_folder_tree();
+    folder_tree_t *target_folder = create_folder_subtree(build_folder, &target);
+
+    vector_t *full_build_info = create_vector_ext(get_system_allocator(), count);
+    for (size_t i = 0; i < count; i++)
+    {
+        project_descriptor_t *project = (project_descriptor_t*)sorted_project_list->list[count - i - 1];
+        project_build_info_t *info = calculate_project_build_info(project, object_file_list, target_folder);
+        add_item_to_vector(full_build_info, info);
+    } 
+
+    make_folders(build_folder_name, build_folder);
+    string_t *target_folder_path = create_formatted_string("%S%c%S", build_folder_name, path_separator, target);
+    for (size_t i = 0; i < count; i++)
+    {
+        make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
+    }
+
+    destroy_vector_and_content(object_file_list, free);
+    free(target_folder_path);
+    destroy_folder_tree(build_folder);
+    destroy_vector_and_content(full_build_info, (void*)destroy_project_build_info);
+    return true;
 }
 
 static string_t * create_c_file_name(string_t path_prefix, string_t *path, string_t *file_name)
