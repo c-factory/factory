@@ -11,13 +11,16 @@
 
 #include "source_list.h"
 #include "folder_tree.h"
+#include "compiler.h"
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <dirent.h>
 
-string_t build_folder_name = { "build", 5 };
-string_t ext_folder_name = { "ext", 3 };
+const string_t build_folder_name = { "build", 5 };
+const string_t ext_folder_name = { "ext", 3 };
+const string_t exe_extension = {".exe", 4 };
+const string_t obj_extension = { ".o", 2 };
 
 typedef struct project_descriptor_t project_descriptor_t;
 
@@ -78,7 +81,7 @@ vector_t * build_header_list(project_descriptor_t *project);
 project_build_info_t *calculate_project_build_info(project_descriptor_t *project,
         vector_t *object_file_list, folder_tree_t *folder_tree);
 void destroy_project_build_info(project_build_info_t *info);
-void make_project(string_t *target_folder, project_build_info_t *info, vector_t *object_file_list);
+void make_project(const compiler_t *compiler, string_t *target_folder, project_build_info_t *info, vector_t *object_file_list);
 
 static string_t * make_path_2(string_t first_part, string_t second_part)
 {
@@ -513,6 +516,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
         if (no_sources)
         {
             bool downloaded = false;
+            printf("/n> Downloading %s...\n", project->fixed_name);
             for (size_t i = 0; i < project->url.count; i++)
             {
                 string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[i], *project_folder);
@@ -585,6 +589,7 @@ void destroy_project_descriptor(project_descriptor_t *project)
 
 bool make_target(string_t target, tree_traversal_result_t * sorted_project_list)
 {
+    printf("\n> Making target '%s'...\n", target.data);
     size_t count = sorted_project_list->count;
     vector_t *object_file_list = create_vector();
     folder_tree_t *build_folder = create_folder_tree();
@@ -599,10 +604,11 @@ bool make_target(string_t target, tree_traversal_result_t * sorted_project_list)
     } 
 
     make_folders(build_folder_name, build_folder);
-    string_t *target_folder_path = create_formatted_string("%S%c%S", build_folder_name, path_separator, target);
+    string_t *target_folder_path = make_path_2(build_folder_name, target);
+    const compiler_t *compiler = get_appropriate_compiler(target);
     for (size_t i = 0; i < count; i++)
     {
-        make_project(target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
+        make_project(compiler, target_folder_path, (project_build_info_t*)full_build_info->data[i], object_file_list);
     }
 
     destroy_vector_and_content(object_file_list, free);
@@ -623,15 +629,13 @@ static string_t * create_c_file_name(string_t path_prefix, string_t *path, strin
     return (string_t*)c_name;
 }
 
-const string_t obj_extension = { "o", 1 };
-
 static string_t * create_obj_file_name(string_t *project_name, string_t *path, string_t *short_c_name)
 {
     file_name_t *fn = split_file_name(*short_c_name);
     string_builder_t *obj_name = append_formatted_string(NULL, "%S%c", *project_name, path_separator);
     if (path->length > 0 && !are_strings_equal(*path, __S(".")))
         obj_name = append_formatted_string(obj_name, "%S%c", *path, path_separator);
-    obj_name = append_formatted_string(obj_name, "%S.%S",
+    obj_name = append_formatted_string(obj_name, "%S%S",
         (fn->extension->length == 0 || are_strings_equal(*fn->extension, __S("c"))) ? *fn->name : *short_c_name,
         obj_extension);
     destroy_file_name(fn);
@@ -662,7 +666,7 @@ source_list_t * build_source_list(project_descriptor_t *project, vector_t *objec
         else
         {
             file_name_template_t *tmpl = create_file_name_template(*fp->file_name);
-            string_t *folder_path = create_formatted_string("%S%c%S", *project->path, path_separator, *fp->path);
+            string_t *folder_path = make_path_2(*project->path, *fp->path);
             DIR *dir = opendir(folder_path->data);
             struct dirent *dent;
             bool found_files = false;
@@ -686,7 +690,7 @@ source_list_t * build_source_list(project_descriptor_t *project, vector_t *objec
             if (found_files)
             {
                 add_folder_to_tree(project_folder, fp->path);
-                string_t *object_files = create_formatted_string("%S%c%S%c*.%S",
+                string_t *object_files = create_formatted_string("%S%c%S%c*%S",
                     *project->fixed_name, path_separator, *fp->path, path_separator, obj_extension);
                 add_item_to_vector(object_file_list, object_files);
             }
@@ -708,7 +712,7 @@ static void add_project_headers_to_list(project_descriptor_t *project, vector_t 
         {
             for (size_t i = 0; i < project->headers.count; i++)
             {
-                string_t *header = create_formatted_string("%S%c%S", *project->path, path_separator, *project->headers.list[i]);
+                string_t *header = make_path_2(*project->path, *project->headers.list[i]);
                 add_item_to_vector(header_list, header);
             }
         }
@@ -753,52 +757,35 @@ void destroy_project_build_info(project_build_info_t *info)
     free(info);
 }
 
-void make_project(string_t *target_folder, project_build_info_t *info, vector_t *object_file_list)
+void make_project(const compiler_t *compiler, string_t *target_folder, project_build_info_t *info, vector_t *object_file_list)
 {
-    // headers
-    string_builder_t *headers_string = NULL;
-    for (size_t i = 0; i < info->header_list->size; i++)
-    {
-        if (i)
-            headers_string = append_char(headers_string, ' ');
-        headers_string = append_formatted_string(headers_string, "-I%S", *((string_t*)info->header_list->data[i]));
-    }
-
     // building
-    printf("Building project %s...\n", info->project->fixed_name->data);
+    printf("\n> Building project '%s'...\n", info->project->fixed_name->data);
+    string_t *h_files = compiler->create_include_files_list(info->header_list);
     source_list_iterator_t *iter = create_iterator_from_source_list(info->source_list);
     while(has_next_source_descriptor(iter))
     {
         source_descriptor_t *source = get_next_source_descriptor(iter);
-        string_t *obj_file = create_formatted_string("%S%c%S", *target_folder, path_separator, *source->obj_file);
-        string_t *cmd = create_formatted_string("gcc %S -c -g -Werror %S -o %S", 
-            *source->c_file, headers_string ? *((string_t*)headers_string) : __S(""), *obj_file);
+        string_t *obj_file = make_path_2(*target_folder, *source->obj_file);
+        string_t *cmd = compiler->create_cmd_line_compile(source->c_file, h_files, obj_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
         free(obj_file);
     }
     destroy_source_list_iterator(iter);
-    free(headers_string);
+    free(h_files);
 
     // linking
     if (info->project->type == project_type_application)
     {
-        printf("Linking...\n");
-        const string_t exe_extension = __S(".exe");
-        string_builder_t *objects_string = NULL;
-        for (size_t i = 0; i < object_file_list->size; i++)
-        {
-            if (i)
-                objects_string = append_char(objects_string, ' ');
-            objects_string = append_formatted_string(objects_string, "%S%c%S", 
-                *target_folder, path_separator, *((string_t*)object_file_list->data[i]));
-        }
-        string_t *cmd_link = create_formatted_string("gcc %S -o %S%c%S%S",
-            *((string_t*)objects_string), *target_folder, path_separator, *info->project->fixed_name, exe_extension);
-        printf("%s\n", cmd_link->data);
-        system(cmd_link->data);
-        free(cmd_link);
-        free(objects_string);
+        printf("\n> Linking...\n");
+        string_t *exe_file = create_formatted_string("%S%S", *info->project->fixed_name, exe_extension);
+        string_t *cmd = compiler->create_cmd_line_link(target_folder, object_file_list, exe_file);
+        printf("%s\n", cmd->data);
+        system(cmd->data);
+        free(cmd);
+        free(exe_file);
     }
 }
+
