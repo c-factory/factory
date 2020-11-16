@@ -99,6 +99,8 @@ static string_t * make_path_2(string_t first_part, string_t second_part)
 int main(void)
 {
     json_element_t *root = read_json_from_file("factory.json", false);
+    if (!root)
+        return -1;
     tree_map_t *all_projects = create_tree_map((void*)compare_wide_strings);
     project_descriptor_t * root_project = parse_project_descriptor(root, "factory.json", all_projects, true, false);
     destroy_json_element(&root->base);
@@ -788,4 +790,3 @@ void make_project(const compiler_t *compiler, string_t *target_folder, project_b
         free(exe_file);
     }
 }
-
