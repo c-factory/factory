@@ -64,7 +64,7 @@ bool make_folders(string_t root, folder_tree_t *tree)
 {
     if (!folder_exists(root.data))
     {
-        if (0 != mkdir(root.data))
+        if (!make_folder(root.data))
             return false;
     }
     map_iterator_t *iter = create_iterator_from_tree_map(&tree->base);

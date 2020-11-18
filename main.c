@@ -493,7 +493,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
         {
             need_to_download = true;
             no_folder = true;
-            if (0 != mkdir(ext_folder_name.data))
+            if (!make_folder(ext_folder_name.data))
             {
                 fprintf(stderr,
                     "Couldn't create folder '%s'\n", ext_folder_name.data);
@@ -506,7 +506,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
         {
             need_to_download = true;
             folder_is_empty = true;
-            if (0 != mkdir(project->path->data))
+            if (!make_folder(project->path->data))
             {
                 fprintf(stderr,
                     "Couldn't create folder '%s'\n", project->path->data);
