@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <dirent.h>
+#include <assert.h>
 
 const string_t build_folder_name = { "build", 5 };
 const string_t ext_folder_name = { "ext", 3 };
@@ -73,6 +74,7 @@ json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
 project_descriptor_t * parse_project_descriptor(json_element_t *root, const char *file_name, tree_map_t *all_projects,
     bool is_root, bool is_temporary);
 project_descriptor_t * get_first_unresolved_project(project_descriptor_t *root_project);
+bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_projects);
 bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_projects);
 void destroy_project_descriptor(project_descriptor_t *project);
 bool make_target(string_t target, tree_traversal_result_t * sorted_project_list);
@@ -474,7 +476,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
         return true;
 
     bool result = true;
-    string_t *project_folder = NULL;
+    bool need_to_download = false;
     string_t *factory_json_path = NULL;
 
     if (!project->path)
@@ -486,11 +488,11 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
             return false;
         }
 
-        bool no_sources = false;
-
+        bool no_folder = false;
         if (!folder_exists(ext_folder_name.data))
         {
-            no_sources = true;
+            need_to_download = true;
+            no_folder = true;
             if (0 != mkdir(ext_folder_name.data))
             {
                 fprintf(stderr,
@@ -498,74 +500,86 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
                 return false;
             }
         }
-        project_folder = make_path_2(ext_folder_name, *project->fixed_name);
-        if (no_sources || !folder_exists(project_folder->data))
+        project->path = make_path_2(ext_folder_name, *project->fixed_name);
+        bool folder_is_empty = false;
+        if (no_folder || !folder_exists(project->path->data))
         {
-            no_sources = true;
-            if (0 != mkdir(project_folder->data))
+            need_to_download = true;
+            folder_is_empty = true;
+            if (0 != mkdir(project->path->data))
             {
                 fprintf(stderr,
-                    "Couldn't create folder '%s'\n", project_folder->data);
+                    "Couldn't create folder '%s'\n", project->path->data);
                 return false;
             }
         }
-        factory_json_path = make_path_2(*project_folder, __S("factory.json"));
-        if (!file_exists(factory_json_path->data))
+        if (folder_is_empty || !folder_exists_and_not_empty(project->path->data))
         {
-            no_sources = true;
+            need_to_download = true;
         }
-
-        if (no_sources)
-        {
-            bool downloaded = false;
-            printf("/n> Downloading %s...\n", project->fixed_name);
-            for (size_t i = 0; i < project->url.count; i++)
-            {
-                string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[i], *project_folder);
-                printf("%s\n", cmd->data);
-                int exec_result = system(cmd->data);
-                free(cmd);
-                if (exec_result == 0)
-                {
-                    downloaded = true;
-                    break;
-                }
-            }
-            if (!downloaded) {
-                fprintf(stderr,
-                    "Couldn't download sources of the project '%s'\n", project->fixed_name->data);
-                goto error;
-            }
-        }
-
-        project->path = project_folder;
-        project_folder = NULL;
-
-        json_element_t *root = read_json_from_file(factory_json_path->data, false);
-        project_descriptor_t * temporary_project = parse_project_descriptor(root, factory_json_path->data, all_projects, true, true);
-        // TODO: merge it correctly
-        project->sources = temporary_project->sources;
-        temporary_project->sources.list = NULL;
-        temporary_project->sources.count = 0;
-        project->headers = temporary_project->headers;
-        temporary_project->headers.list = NULL;
-        temporary_project->headers.count = 0;
-        project->depends = temporary_project->depends;
-        temporary_project->depends.list = NULL;
-        temporary_project->depends.count = 0;
-        destroy_json_element(&root->base);
-        destroy_project_descriptor(temporary_project);
     }
 
-    project->unresolved = false;
+    assert(project->path != NULL);
+
+    if (need_to_download)
+    {
+        bool downloaded = false;
+        printf("/n> Downloading '%s'...\n", project->fixed_name->data);
+        for (size_t i = 0; i < project->url.count; i++)
+        {
+            string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[i], *project->path);
+            printf("%s\n", cmd->data);
+            int exec_result = system(cmd->data);
+            free(cmd);
+            if (exec_result == 0)
+            {
+                downloaded = true;
+                break;
+            }
+        }
+        if (!downloaded) {
+            fprintf(stderr,
+                "Couldn't download sources of the project '%s'\n", project->fixed_name->data);
+            goto error;
+        }
+    }
+
+    if (project->headers.count == 0)
+    {
+        factory_json_path = make_path_2(*project->path, __S("factory.json"));
+        json_element_t *root = read_json_from_file(factory_json_path->data, false);
+        if (!root)
+            goto error;            
+        project_descriptor_t * tmp_proj = parse_project_descriptor(root, factory_json_path->data, all_projects, true, true);
+        destroy_json_element(&root->base);
+        if (!tmp_proj)
+            goto error;
+
+        project->sources = tmp_proj->sources;
+        tmp_proj->sources.list = NULL;
+        tmp_proj->sources.count = 0;
+
+        project->headers = tmp_proj->headers;
+        tmp_proj->headers.list = NULL;
+        tmp_proj->headers.count = 0;
+
+        project->depends = tmp_proj->depends;
+        tmp_proj->depends.list = NULL;
+        tmp_proj->depends.count = 0;
+
+        destroy_project_descriptor(tmp_proj);
+    }
+
+    assert(project->headers.count > 0);
     goto cleanup;
 
 error:
     result = false;
 
 cleanup:
-    free(project_folder);
     free(factory_json_path);
+    
+    project->unresolved = !result;
     return result;
 }
 
