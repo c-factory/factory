@@ -23,15 +23,15 @@ static string_t * create_include_files_list_for_gcc(vector_t *list)
 static string_t * create_cmd_line_compile_for_gcc_debug(string_t *c_file, string_t *h_files, string_t *obj_file)
 {
     if (h_files)
-        return create_formatted_string("gcc %S -c -g -Werror %S -o %S", *c_file, *h_files, *obj_file);
-    return create_formatted_string("gcc %S -c -g -Werror -o %S", *c_file, *obj_file);
+        return create_formatted_string("gcc %S -c -g -std=c99 -Werror %S -o %S", *c_file, *h_files, *obj_file);
+    return create_formatted_string("gcc %S -c -g -std=c99 -Werror -o %S", *c_file, *obj_file);
 }
 
 static string_t * create_cmd_line_compile_for_gcc_release(string_t *c_file, string_t *h_files, string_t *obj_file)
 {
     if (h_files)
-        return create_formatted_string("gcc %S -c -O3 -Werror %S -o %S", *c_file, *h_files, *obj_file);
-    return create_formatted_string("gcc %S -c -O3 -Werror -o %S", *c_file, *obj_file);
+        return create_formatted_string("gcc %S -c -O3 -std=c99 -Werror %S -o %S", *c_file, *h_files, *obj_file);
+    return create_formatted_string("gcc %S -c -O3 -std=c99 -Werror -o %S", *c_file, *obj_file);
 }
 
 char *gcc_stdlib_names[] = 

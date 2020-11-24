@@ -27,5 +27,5 @@
             "url": "https://github.com/c-factory/graphs.git"
         }
     ],
-    "stdlib" : ["threads"]
+    "stdlib" : ["math"]
 }

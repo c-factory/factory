@@ -21,7 +21,12 @@
 
 const string_t build_folder_name = { "build", 5 };
 const string_t ext_folder_name = { "ext", 3 };
-const string_t exe_extension = {".exe", 4 };
+const string_t exe_extension =
+#ifdef _WIN32
+	{".exe", 4 };
+#else
+        {".bin", 4 };
+#endif
 const string_t obj_extension = { ".o", 2 };
 
 typedef struct project_descriptor_t project_descriptor_t;
@@ -567,7 +572,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
     if (need_to_download)
     {
         bool downloaded = false;
-        printf("/n> Downloading '%s'...\n", project->fixed_name->data);
+        printf("\n> Downloading '%s'...\n", project->fixed_name->data);
         for (size_t i = 0; i < project->url.count; i++)
         {
             string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[i], *project->path);
