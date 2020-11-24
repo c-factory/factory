@@ -572,7 +572,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
     if (need_to_download)
     {
         bool downloaded = false;
-        printf("\n> Downloading '%s'...\n", project->fixed_name->data);
+        printf("\n> Downloading project '%s'...\n", project->fixed_name->data);
         for (size_t i = 0; i < project->url.count; i++)
         {
             string_t *cmd = create_formatted_string("git clone %S %S", *project->url.list[i], *project->path);
@@ -614,6 +614,8 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
         project->depends = tmp_proj->depends;
         tmp_proj->depends.list = NULL;
         tmp_proj->depends.count = 0;
+
+        project->stdlib_mask = tmp_proj->stdlib_mask;
 
         destroy_project_descriptor(tmp_proj);
     }

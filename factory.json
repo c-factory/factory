@@ -26,6 +26,5 @@
             "name": "graphs",
             "url": "https://github.com/c-factory/graphs.git"
         }
-    ],
-    "stdlib" : ["math"]
+    ]
 }
