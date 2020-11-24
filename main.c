@@ -11,6 +11,7 @@
 
 #include "source_list.h"
 #include "folder_tree.h"
+#include "stdlib_names.h"
 #include "compiler.h"
 
 #include <stdlib.h>
@@ -60,6 +61,7 @@ struct project_descriptor_t
         string_t             **list;
         size_t                 count;
     } url;
+    long int                   stdlib_mask;
     bool                       unresolved;
 };
 
@@ -68,6 +70,7 @@ typedef struct
     project_descriptor_t *project;
     source_list_t *source_list;
     vector_t *header_list;
+    long int stdlib_mask;
 } project_build_info_t;
 
 json_element_t * read_json_from_file(const char *file_name, bool silent_mode);
@@ -79,7 +82,7 @@ bool resolve_dependencies(project_descriptor_t *project, tree_map_t *all_project
 void destroy_project_descriptor(project_descriptor_t *project);
 bool make_target(string_t target, tree_traversal_result_t * sorted_project_list);
 source_list_t * build_source_list(project_descriptor_t *project, vector_t *object_file_list, folder_tree_t *folder_tree);
-vector_t * build_header_list(project_descriptor_t *project);
+vector_t * build_header_list(project_descriptor_t *project, long int *stdlib_mask);
 project_build_info_t *calculate_project_build_info(project_descriptor_t *project,
         vector_t *object_file_list, folder_tree_t *folder_tree);
 void destroy_project_build_info(project_build_info_t *info);
@@ -414,6 +417,46 @@ project_descriptor_t * parse_project_descriptor(json_element_t *root, const char
         }
     }
 
+    json_pair_t *elem_stdlib = get_pair_from_json_object(root->data.object, L"stdlib");
+    if (elem_stdlib)
+    {
+        const wide_string_t *unknown_name_wide = NULL;
+        if (elem_stdlib->value->base.type == json_string)
+        {
+            stdlib_t lib = parse_stdlib_name(elem_stdlib->value->data.string_value);
+            if (lib == l_unknown)
+                unknown_name_wide = elem_stdlib->value->data.string_value;
+            else
+                project->stdlib_mask = 1 << lib;
+        }
+        else if (elem_stdlib->value->base.type == json_array)
+        {
+            size_t count = elem_stdlib->value->data.array->count;
+            for (size_t i = 0; i < count; i++)
+            {
+                json_element_t *elem_stdlib_item = get_element_from_json_array(elem_stdlib->value->data.array, i);
+                if  (elem_stdlib_item && elem_stdlib_item->base.type == json_string)
+                {
+                    stdlib_t lib = parse_stdlib_name(elem_stdlib_item->data.string_value);
+                    if (lib == l_unknown)
+                        unknown_name_wide = elem_stdlib_item->data.string_value;
+                    else
+                        project->stdlib_mask |= 1 << lib;
+                }
+                if (unknown_name_wide)
+                    break;
+            }
+        }
+        if (unknown_name_wide)
+        {
+            string_t *unknown_name = wide_string_to_string(*unknown_name_wide, '?', NULL);
+            fprintf(stderr,
+                "'%s', unknown standard library name: '%s'\n", file_name, unknown_name->data);
+            free(unknown_name);
+            goto error;
+        }
+    }
+    
     if (!project->path)
     {
         if (is_root)
@@ -578,7 +621,7 @@ error:
 
 cleanup:
     free(factory_json_path);
-    
+
     project->unresolved = !result;
     return result;
 }
@@ -715,12 +758,13 @@ source_list_t * build_source_list(project_descriptor_t *project, vector_t *objec
     return source_list;
 }
 
-static void add_project_headers_to_list(project_descriptor_t *project, vector_t *header_list, tree_set_t *visited_projects)
+static void add_project_headers_to_list(project_descriptor_t *project, vector_t *header_list, long int *stdlib_mask, tree_set_t *visited_projects)
 {
     if (is_there_item_in_tree_set(visited_projects, project))
         return;
 
-    add_item_to_tree_set(visited_projects, project);    
+    add_item_to_tree_set(visited_projects, project);
+    *stdlib_mask |= project->stdlib_mask;
 
     if (project->headers.count)
     {
@@ -743,15 +787,15 @@ static void add_project_headers_to_list(project_descriptor_t *project, vector_t 
 
     for (size_t i = 0; i < project->depends.count; i++)
     {
-        add_project_headers_to_list(project->depends.list[i], header_list, visited_projects);
+        add_project_headers_to_list(project->depends.list[i], header_list, stdlib_mask, visited_projects);
     }
 }
 
-vector_t * build_header_list(project_descriptor_t *project)
+vector_t * build_header_list(project_descriptor_t *project, long int *stdlib_mask)
 {
     vector_t *header_list = create_vector();
     tree_set_t *visited_projects = create_tree_set(NULL);
-    add_project_headers_to_list(project, header_list, visited_projects);
+    add_project_headers_to_list(project, header_list, stdlib_mask, visited_projects);
     destroy_tree_set(visited_projects);
     return header_list;
 }
@@ -762,7 +806,8 @@ project_build_info_t *calculate_project_build_info(project_descriptor_t *project
     project_build_info_t *info = nnalloc(sizeof(project_build_info_t));
     info->project = project;
     info->source_list = build_source_list(project, object_file_list, folder_tree);
-    info->header_list = build_header_list(project);
+    info->stdlib_mask = 0;
+    info->header_list = build_header_list(project, &info->stdlib_mask);
     return info;
 }
 
@@ -797,7 +842,7 @@ void make_project(const compiler_t *compiler, string_t *target_folder, project_b
     {
         printf("\n> Linking...\n");
         string_t *exe_file = create_formatted_string("%S%S", *info->project->fixed_name, exe_extension);
-        string_t *cmd = compiler->create_cmd_line_link(target_folder, object_file_list, exe_file);
+        string_t *cmd = compiler->create_cmd_line_link(target_folder, object_file_list, info->stdlib_mask, exe_file);
         printf("%s\n", cmd->data);
         system(cmd->data);
         free(cmd);
